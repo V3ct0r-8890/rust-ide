@@ -71,13 +71,14 @@ Prebuilt packages are on the [Releases page](https://github.com/V3ct0r-8890/rust
 To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging/package-linux.sh`
 (output in `dist/`).
 
-## Milestones
+## Status
 
-1. ~~Editor window with Turbo-style menu bar and status line (open / save / exit)~~ done
-2. ~~F5: build + run, error list that jumps to the source line~~ done
-3. ~~Syntax highlighting, LSP completion and live diagnostics~~ done
-4. DAP: breakpoints, F7/F8 stepping, Watch window
-5. TUI front end
+Done: editor, build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
+and completion, undo, basic Vim mode, Windows and Linux packages.
+
+Next: Search menu, debugger (F7/F8, breakpoints, Watch), several open files, TUI front end.
+
+See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limitations.
 
 ## Supported systems
 
