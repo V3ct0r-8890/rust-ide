@@ -30,9 +30,14 @@ Back-end engines (run invisibly by the IDE, never typed by the user):
 | F2 / Ctrl+S | Save (asks for a name the first time) |
 | F3 / Ctrl+O | Open |
 | F9 | Compile / syntax-check, list errors, jump to the first one |
-| F5 / Ctrl+F9 | Save, compile and run (console window, or the program's own GUI window) |
+| F5 / Ctrl+F9 | Save, compile and run in the Output window (GUI programs open their own window) |
+| Alt+F5 | Show / hide the Output window (Turbo Pascal's "User screen"); Esc also hides it |
+| Ctrl+F2 | Program reset: stop the running program |
 | Ctrl+Space | Code completion (also opens automatically after `.` and `::`) |
 | Alt+X | Exit (press twice to discard unsaved changes) |
+
+The Output window shows the program's output and has an input line for programs that read
+from the keyboard. *Run > Run in external terminal* opens a separate terminal instead.
 
 Click a line in the Messages panel to jump to that error. While you type, the language server's
 errors are shown live: red/magenta text in the editor, the "Messages (live)" panel, and the status bar. `rust-ide path/to/file.rs` opens a file at startup.
@@ -45,20 +50,29 @@ errors are shown live: red/magenta text in the editor, the "Messages (live)" pan
 4. DAP: breakpoints, F7/F8 stepping, Watch window
 5. TUI front end
 
+## Supported systems
+
+- Windows 10/11 (GNU toolchain, no Visual Studio needed)
+- Ubuntu 24.04 LTS and newer
+- Fedora, RHEL 9/10, Rocky Linux, AlmaLinux
+
+At startup rust-ide checks for the tools it needs (Rust, a C linker, Python, rust-analyzer,
+basedpyright, ...). If something is missing it opens **Options > Dependencies**, which shows
+the install command for your system, can install user-level tools itself, and links to the
+**[install guide](docs/INSTALL.md)**. On Linux it also checks the GUI libraries before opening
+its window and prints the exact `apt` / `dnf` command if any are missing.
+
 ## Building
 
 ```
 cargo run
 ```
 
-Requires the Rust toolchain via rustup. On Windows this project uses the open-source GNU toolchain
-(`rustup default stable-x86_64-pc-windows-gnu`) plus MinGW-w64 binutils for `dlltool`
-(e.g. `winget install BrechtSanders.WinLibs.POSIX.MSVCRT`), so no Visual Studio is needed.
-Python 3 on `PATH` is needed for Python files.
+See **[docs/INSTALL.md](docs/INSTALL.md)** for the toolchain and language servers on each system.
 
-### Language servers (optional, for live errors and completion)
+Options: `rust-ide --software` (or `renderer=software` in the settings file) uses software
+rendering on machines with broken GPU drivers. Settings live in `%APPDATA%\rust-ide\settings.txt`
+or `~/.config/rust-ide/settings.txt`.
 
-- Rust: `rustup component add rust-analyzer`
-- Python: `python -m pip install --user basedpyright` (or `pyright`); a project `.venv` containing it is also found
-
-Live server tests: `cargo test -- --ignored`.
+Tests: `cargo test`; live language-server tests: `cargo test -- --ignored`.
+CI builds and tests on Ubuntu 24.04, Fedora, AlmaLinux 9/10 and Windows.

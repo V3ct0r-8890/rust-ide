@@ -7,13 +7,14 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 
 use iced::futures::channel::mpsc;
 use iced::futures::{SinkExt, Stream, StreamExt, stream};
 use serde_json::{Value, json};
 
 use crate::highlight::Lang;
+use crate::platform;
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -353,29 +354,24 @@ fn start_server(
     let (program, args, name) = match lang {
         Lang::Rust => (
             find_program(root, &["rust-analyzer"])
-                .ok_or("rust-analyzer not found (rustup component add rust-analyzer)")?,
+                .ok_or("rust-analyzer not installed (see Options > Dependencies)")?,
             Vec::new(),
             "rust-analyzer",
         ),
         _ => {
-            let program = find_program(root, &["basedpyright-langserver", "pyright-langserver"])
-                .ok_or("Python LSP not found (pip install basedpyright)")?;
+            let program = find_program(root, PYTHON_SERVERS)
+                .ok_or("Python LSP not installed (see Options > Dependencies)")?;
             (program, vec!["--stdio"], "pyright")
         }
     };
 
-    let mut command = Command::new(&program);
+    let mut command = platform::hidden_command(&program);
     command
         .args(&args)
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     let mut child = command
         .spawn()
         .map_err(|e| format!("Cannot start {}: {e}", program.display()))?;
@@ -441,30 +437,18 @@ const PYTHON_EXE: &str = "Scripts/python.exe";
 #[cfg(not(windows))]
 const PYTHON_EXE: &str = "bin/python";
 
-/// Finds the first of `names` in the project's `.venv`, on PATH, or in
-/// Python's user scripts directory.
-fn find_program(root: &Path, names: &[&str]) -> Option<PathBuf> {
-    let extensions: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ".bat"] } else { &[""] };
+/// Finds the first of `names` in the project's `.venv`, on PATH, in the
+/// usual per-user tool directories, or in Python's user scripts directory.
+pub fn find_program(root: &Path, names: &[&str]) -> Option<PathBuf> {
     let bin = if cfg!(windows) { "Scripts" } else { "bin" };
-
     let mut dirs: Vec<PathBuf> = venv_dir(root).map(|v| v.join(bin)).into_iter().collect();
-    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
-        dirs.push(PathBuf::from(home).join(".cargo").join("bin"));
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
-    }
+    dirs.extend(platform::search_dirs());
     dirs.extend(python_user_scripts());
-
-    names.iter().find_map(|name| {
-        dirs.iter().find_map(|dir| {
-            extensions
-                .iter()
-                .map(|ext| dir.join(format!("{name}{ext}")))
-                .find(|candidate| candidate.is_file())
-        })
-    })
+    names.iter().find_map(|name| platform::find_in(&dirs, name))
 }
+
+/// The Python language servers this IDE can use, in order of preference.
+pub const PYTHON_SERVERS: &[&str] = &["basedpyright-langserver", "pyright-langserver"];
 
 fn venv_dir(root: &Path) -> Option<PathBuf> {
     root.ancestors()
@@ -472,18 +456,17 @@ fn venv_dir(root: &Path) -> Option<PathBuf> {
         .find(|venv| venv.join(PYTHON_EXE).is_file())
 }
 
+/// Python's per-user scripts directory (asked once; spawning Python is slow).
 fn python_user_scripts() -> Option<PathBuf> {
-    let script = "import os, sysconfig; print(sysconfig.get_path('scripts', f'{os.name}_user'))";
-    let mut command = Command::new("python");
-    command.args(["-c", script]);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    let output = command.output().ok()?;
-    let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!dir.is_empty()).then(|| PathBuf::from(dir))
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let script = "import os, sysconfig; print(sysconfig.get_path('scripts', f'{os.name}_user'))";
+        let output =
+            platform::hidden_command(platform::python()).args(["-c", script]).output().ok()?;
+        let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!dir.is_empty()).then(|| PathBuf::from(dir))
+    })
+    .clone()
 }
 
 /// The directory a language server should treat as the workspace.

@@ -1,7 +1,10 @@
 //! rust-ide: a Turbo Pascal–style IDE for Rust and Python (iced GUI front end).
 
+mod deps;
 mod highlight;
 mod lsp;
+mod output;
+mod platform;
 mod runner;
 
 use std::path::{Path, PathBuf};
@@ -11,12 +14,14 @@ use iced::futures::channel::mpsc;
 use iced::keyboard::{self, Key, Modifiers, key};
 use iced::widget::text_editor::{Action, Binding, Cursor, Edit, KeyPress, Position};
 use iced::widget::{
-    Space, button, column, container, mouse_area, row, scrollable, stack, text, text_editor,
+    Space, button, checkbox, column, container, mouse_area, opaque, row, scrollable, stack, text,
+    text_editor, text_input,
 };
 use iced::{Background, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
 
 use highlight::{Lang, Mark};
-use runner::{BuildResult, Diagnostic};
+use platform::Os;
+use runner::{BuildResult, Diagnostic, RunTarget};
 
 const TURBO_BLUE: Color = Color::from_rgb(0.0, 0.0, 0.66);
 const TURBO_CYAN: Color = Color::from_rgb(0.0, 0.66, 0.66);
@@ -25,6 +30,7 @@ const TURBO_DARK_GRAY: Color = Color::from_rgb(0.33, 0.33, 0.33);
 const TURBO_GREEN: Color = Color::from_rgb(0.0, 0.66, 0.0);
 const TURBO_YELLOW: Color = Color::from_rgb(1.0, 1.0, 0.33);
 const TURBO_RED: Color = Color::from_rgb(0.66, 0.0, 0.0);
+const SCREEN_TEXT: Color = Color::from_rgb(0.75, 0.75, 0.75);
 
 const MENU_TITLES: [&str; 9] = [
     "File", "Edit", "Search", "Run", "Compile", "Debug", "Options", "Window", "Help",
@@ -34,8 +40,21 @@ const MENU_BAR_HEIGHT: f32 = 26.0;
 const STATUS_BAR_HEIGHT: f32 = 24.0;
 const MESSAGES_HEIGHT: f32 = 140.0;
 const COMPLETION_ROWS: usize = 10;
+const OUTPUT_INPUT: &str = "output-input";
 
 fn main() -> iced::Result {
+    if let Err(message) = platform::gui_preflight() {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
+    // Opt-in software rendering, for machines with broken GPU drivers.
+    let software = std::env::args().any(|a| a == "--software")
+        || platform::read_setting("renderer").as_deref() == Some("software");
+    if software && std::env::var_os("ICED_BACKEND").is_none() {
+        // SAFETY: called before any other thread is started.
+        unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
+    }
+
     iced::application(Ide::new, Ide::update, Ide::view)
         .title(Ide::title)
         .theme(|_: &Ide| Theme::Dark)
@@ -49,6 +68,8 @@ enum Menu {
     File,
     Run,
     Compile,
+    Options,
+    Help,
 }
 
 /// What to do once the file is saved (Save As may be pending).
@@ -57,6 +78,7 @@ enum AfterSave {
     Nothing,
     Compile,
     Run,
+    RunExternal,
 }
 
 /// Commands that throw away unsaved edits and therefore need a second press.
@@ -85,6 +107,25 @@ struct Completion {
     waiting: bool,
 }
 
+/// Turbo Pascal's "User screen": the running program's input and output.
+#[derive(Default)]
+struct OutputPane {
+    screen: String,
+    title: String,
+    visible: bool,
+    running: bool,
+    run_id: u64,
+    handle: Option<output::Handle>,
+    input: String,
+}
+
+struct DepsDialog {
+    list: Vec<deps::Dep>,
+    checking: bool,
+    installing: Option<&'static str>,
+    message: String,
+}
+
 #[derive(Default)]
 struct Ide {
     content: text_editor::Content,
@@ -105,6 +146,10 @@ struct Ide {
     marks: Arc<Vec<Mark>>,
     completion: Option<Completion>,
     next_completion_id: u64,
+    output: OutputPane,
+    os: Option<Os>,
+    deps: Option<DepsDialog>,
+    check_at_startup: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -127,13 +172,34 @@ enum Message {
     TriggerCompletion,
     CompletionNav(Nav),
     CompletionPick(usize),
+    Escape,
+    RunExternal,
+    Output(u64, output::Event),
+    OutputInput(String),
+    OutputSubmit,
+    OutputToggle,
+    OutputStop,
+    ShowDeps,
+    DepsChecked(Vec<deps::Dep>, bool),
+    DepInstall(usize),
+    DepInstalled(&'static str, Result<String, String>),
+    ToggleStartupCheck(bool),
+    CloseDeps,
+    CopyText(String),
+    OpenUrl(&'static str),
 }
 
 impl Ide {
-    /// Starts empty, or with the file given on the command line.
-    fn new() -> Self {
+    /// Starts empty, or with the file given on the command line, and checks
+    /// the external tools in the background.
+    fn new() -> (Self, Task<Message>) {
         let mut ide = Self::default();
-        if let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) {
+        let os = Os::detect();
+        ide.os = Some(os);
+        ide.check_at_startup =
+            platform::read_setting("check_dependencies").as_deref() != Some("false");
+        let file = std::env::args_os().skip(1).find(|a| !a.to_string_lossy().starts_with("--"));
+        if let Some(path) = file.map(PathBuf::from) {
             if path.exists() {
                 ide.load(&path);
             } else {
@@ -141,7 +207,12 @@ impl Ide {
                 ide.path = Some(path);
             }
         }
-        ide
+        let task = if ide.check_at_startup {
+            Task::perform(platform::blocking(move || deps::check(os)), |list| Message::DepsChecked(list, true))
+        } else {
+            Task::none()
+        };
+        (ide, task)
     }
 
     fn title(&self) -> String {
@@ -165,7 +236,15 @@ impl Ide {
             } => shortcut(&key, physical_key, modifiers),
             _ => None,
         });
-        Subscription::batch([keys, Subscription::run(lsp::connect).map(Message::Lsp)])
+        // Esc must work even when a text field has focus and captures it.
+        let escape = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: Key::Named(key::Named::Escape),
+                ..
+            }) => Some(Message::Escape),
+            _ => None,
+        });
+        Subscription::batch([keys, escape, Subscription::run(lsp::connect).map(Message::Lsp)])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -235,10 +314,10 @@ impl Ide {
             }
             Message::Compile => self.save(AfterSave::Compile),
             Message::Run => self.save(AfterSave::Run),
+            Message::RunExternal => self.save(AfterSave::RunExternal),
             Message::BuildFinished(result, after) => {
                 self.building = false;
-                self.finish_build(result, after);
-                Task::none()
+                self.finish_build(result, after)
             }
             Message::JumpTo(index) => {
                 if let Some(diagnostic) = self.panel_items().get(index).cloned() {
@@ -261,6 +340,180 @@ impl Ide {
             Message::CompletionPick(index) => {
                 self.accept_completion(index);
                 Task::none()
+            }
+            Message::Escape => {
+                if self.deps.is_some() {
+                    self.deps = None;
+                } else if self.output.visible {
+                    self.output.visible = false;
+                }
+                Task::none()
+            }
+            Message::Output(run_id, event) => {
+                if run_id == self.output.run_id {
+                    self.output_event(event);
+                }
+                Task::none()
+            }
+            Message::OutputInput(input) => {
+                self.output.input = input;
+                Task::none()
+            }
+            Message::OutputSubmit => {
+                let line = format!("{}\n", std::mem::take(&mut self.output.input));
+                if let Some(handle) = &self.output.handle {
+                    handle.send(&line);
+                    // Piped programs do not echo what was typed.
+                    output::append(&mut self.output.screen, &line);
+                }
+                Task::none()
+            }
+            Message::OutputToggle => {
+                self.output.visible = !self.output.visible;
+                if self.output.visible {
+                    iced::widget::operation::focus(OUTPUT_INPUT)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::OutputStop => {
+                match &self.output.handle {
+                    Some(handle) => {
+                        handle.kill();
+                        self.status = "Program reset".into();
+                    }
+                    None => self.status = "No program is running".into(),
+                }
+                Task::none()
+            }
+            Message::ShowDeps => self.check_deps(false),
+            Message::DepsChecked(list, startup) => {
+                let missing = list.iter().any(|d| d.missing() && d.need != deps::Need::Optional);
+                if startup && !missing {
+                    return Task::none();
+                }
+                let keep = self.deps.as_ref().filter(|d| d.checking).map(|d| d.message.clone());
+                let message = keep.unwrap_or_else(|| {
+                    if missing {
+                        "Some tools are missing. Install them here, or open the install guide."
+                    } else {
+                        "Everything needed is installed."
+                    }
+                    .into()
+                });
+                self.deps = Some(DepsDialog { list, checking: false, installing: None, message });
+                Task::none()
+            }
+            Message::DepInstall(index) => {
+                let Some(dialog) = &mut self.deps else { return Task::none() };
+                let Some(dep) = dialog.list.get(index) else { return Task::none() };
+                let Some(command) = dep.auto.clone() else { return Task::none() };
+                let name = dep.name;
+                dialog.installing = Some(name);
+                dialog.message = format!("Installing {name}: {} ...", command.join(" "));
+                Task::perform(platform::blocking(move || deps::install(&command)), move |result| {
+                    Message::DepInstalled(name, result)
+                })
+            }
+            Message::DepInstalled(name, result) => {
+                let message = match result {
+                    Ok(_) => format!("{name} installed."),
+                    Err(e) => format!("{name} failed: {e}"),
+                };
+                let task = self.check_deps(false);
+                if let Some(dialog) = &mut self.deps {
+                    dialog.installing = None;
+                    dialog.message = message;
+                }
+                task
+            }
+            Message::ToggleStartupCheck(on) => {
+                self.check_at_startup = on;
+                let value = if on { "true" } else { "false" };
+                if let Err(e) = platform::write_setting("check_dependencies", value) {
+                    self.status = format!("Cannot save settings: {e}");
+                }
+                Task::none()
+            }
+            Message::CloseDeps => {
+                self.deps = None;
+                Task::none()
+            }
+            Message::CopyText(text) => {
+                self.status = "Command copied to the clipboard".into();
+                iced::clipboard::write(text)
+            }
+            Message::OpenUrl(url) => {
+                if let Err(e) = platform::open_url(url) {
+                    self.status = format!("Cannot open browser: {e}");
+                }
+                Task::none()
+            }
+        }
+    }
+
+    /// Opens the Dependencies dialog (or refreshes it) and checks the tools.
+    fn check_deps(&mut self, startup: bool) -> Task<Message> {
+        let os = self.os.unwrap_or_else(Os::detect);
+        match &mut self.deps {
+            Some(dialog) => dialog.checking = true,
+            None => {
+                self.deps = Some(DepsDialog {
+                    list: Vec::new(),
+                    checking: true,
+                    installing: None,
+                    message: "Checking installed tools...".into(),
+                })
+            }
+        }
+        Task::perform(platform::blocking(move || deps::check(os)), move |list| Message::DepsChecked(list, startup))
+    }
+
+    // ----- Running programs -----
+
+    fn start_run(&mut self, target: RunTarget) -> Task<Message> {
+        if let Some(handle) = self.output.handle.take() {
+            handle.kill();
+        }
+        // For "python script.py" show the script name, otherwise the program.
+        let shown = target.args.first().map(PathBuf::from).unwrap_or_else(|| target.program.clone());
+        self.output.title = shown.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.output.screen.clear();
+        self.output.input.clear();
+        self.output.running = true;
+        self.output.visible = !target.gui;
+        self.output.run_id += 1;
+        self.status = if target.gui {
+            "Running (GUI window) - Alt+F5 shows its output".into()
+        } else {
+            "Running - Alt+F5 toggles the output window".into()
+        };
+
+        let run_id = self.output.run_id;
+        let run = Task::run(output::run(target), move |event| Message::Output(run_id, event));
+        if self.output.visible {
+            Task::batch([run, iced::widget::operation::focus(OUTPUT_INPUT)])
+        } else {
+            run
+        }
+    }
+
+    fn output_event(&mut self, event: output::Event) {
+        match event {
+            output::Event::Started(handle) => self.output.handle = Some(handle),
+            output::Event::Output(text) => output::append(&mut self.output.screen, &text),
+            output::Event::Exited(code) => {
+                self.output.running = false;
+                self.output.handle = None;
+                let code = code.map_or("stopped".to_string(), |c| format!("exit code {c}"));
+                output::append(&mut self.output.screen, &format!("\n[Program finished, {code}]\n"));
+                self.status = format!("Program finished, {code}");
+            }
+            output::Event::Failed(error) => {
+                self.output.running = false;
+                self.output.handle = None;
+                output::append(&mut self.output.screen, &format!("{error}\n"));
+                self.status = error;
             }
         }
     }
@@ -357,12 +610,12 @@ impl Ide {
         self.building = true;
         self.diagnostics.clear();
         self.status = format!("Compiling {} ...", path.display());
-        Task::perform(async move { runner::build(&path) }, move |result| {
+        Task::perform(platform::blocking(move || runner::build(&path)), move |result| {
             Message::BuildFinished(result, after)
         })
     }
 
-    fn finish_build(&mut self, result: BuildResult, after: AfterSave) {
+    fn finish_build(&mut self, result: BuildResult, after: AfterSave) -> Task<Message> {
         self.diagnostics = result.diagnostics;
         let errors = self.diagnostics.iter().filter(|d| d.level == "error").count();
         let warnings = self.diagnostics.len() - errors;
@@ -372,19 +625,22 @@ impl Ide {
             if let Some(first) = self.diagnostics.iter().find(|d| d.level == "error").cloned() {
                 self.jump_to(&first);
             }
-            return;
+            return Task::none();
         }
 
         self.status = format!("Compile successful, {warnings} warning(s)");
-        if after != AfterSave::Run {
-            return;
-        }
-        if let Some(target) = result.target {
-            self.status = match runner::run(&target) {
-                Ok(()) if target.gui => "Running (GUI window)".into(),
-                Ok(()) => "Running (console window)".into(),
-                Err(e) => format!("Cannot run {}: {e}", target.program.display()),
-            };
+        let Some(target) = result.target else { return Task::none() };
+        match after {
+            AfterSave::Run => self.start_run(target),
+            AfterSave::RunExternal => {
+                self.status = match runner::run_external(&target) {
+                    Ok(()) if target.gui => "Running (GUI window)".into(),
+                    Ok(()) => "Running in an external terminal".into(),
+                    Err(e) => e,
+                };
+                Task::none()
+            }
+            AfterSave::Nothing | AfterSave::Compile => Task::none(),
         }
     }
 
@@ -624,6 +880,8 @@ impl Ide {
                 "File" => Some(Menu::File),
                 "Run" => Some(Menu::Run),
                 "Compile" => Some(Menu::Compile),
+                "Options" => Some(Menu::Options),
+                "Help" => Some(Menu::Help),
                 _ => None,
             };
             let open = menu.is_some() && menu == self.menu;
@@ -680,6 +938,12 @@ impl Ide {
                     .padding(Padding::default().bottom(bottom + 4.0).right(16.0)),
             );
         }
+        if self.output.visible {
+            layers = layers.push(self.output_window());
+        }
+        if let Some(dialog) = &self.deps {
+            layers = layers.push(self.deps_dialog(dialog));
+        }
         if let Some(menu) = self.menu {
             layers = layers
                 .push(
@@ -689,6 +953,137 @@ impl Ide {
                 .push(dropdown(menu));
         }
         layers.into()
+    }
+
+    /// The program's screen, drawn over the editor like Turbo Pascal's User screen.
+    fn output_window(&self) -> Element<'_, Message> {
+        let state = if self.output.running { "running" } else { "finished" };
+        let title = text(format!(" Output - {} ({state}) ", self.output.title)).color(Color::BLACK);
+        let title_bar = container(row![
+            title,
+            Space::new().width(Length::Fill),
+            small_button("Stop", (self.output.running).then_some(Message::OutputStop)),
+            small_button("Hide", Some(Message::OutputToggle)),
+        ])
+        .width(Length::Fill)
+        .style(|_| container::Style::default().background(TURBO_GRAY));
+
+        let screen = scrollable(
+            text(&self.output.screen).color(SCREEN_TEXT).font(Font::MONOSPACE).width(Length::Fill),
+        )
+        .anchor_bottom()
+        .height(Length::Fill);
+
+        let input = text_input(
+            if self.output.running { "Type input for the program, Enter to send" } else { "" },
+            &self.output.input,
+        )
+        .id(OUTPUT_INPUT)
+        .on_input_maybe(self.output.running.then_some(Message::OutputInput))
+        .on_submit(Message::OutputSubmit)
+        .font(Font::MONOSPACE);
+
+        let footer = text(" Enter Send input   Ctrl+F2 Stop   Alt+F5/Esc Hide").color(Color::BLACK);
+        let window = container(column![
+            title_bar,
+            container(screen).padding([4, 8]).height(Length::Fill),
+            input,
+            container(footer).width(Length::Fill).style(|_| {
+                container::Style::default().background(TURBO_GRAY)
+            }),
+        ])
+        .style(|_| container::Style {
+            border: iced::Border::default().color(TURBO_GRAY).width(2),
+            ..container::Style::default().background(Color::BLACK)
+        });
+
+        opaque(
+            container(window)
+                .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(STATUS_BAR_HEIGHT + 8.0).left(24.0).right(24.0))
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+    }
+
+    fn deps_dialog<'a>(&'a self, dialog: &'a DepsDialog) -> Element<'a, Message> {
+        let busy = dialog.checking || dialog.installing.is_some();
+        let rows = dialog.list.iter().enumerate().map(|(index, dep)| {
+            let (mark, color) = match (&dep.found, dep.need) {
+                (Some(_), _) => ("[ OK ]", TURBO_GREEN),
+                (None, deps::Need::Optional) => ("[ -- ]", TURBO_DARK_GRAY),
+                (None, _) => ("[MISS]", TURBO_RED),
+            };
+            let need = match dep.need {
+                deps::Need::Required => "required",
+                deps::Need::Recommended => "recommended",
+                deps::Need::Optional => "optional",
+            };
+            let detail: Element<'a, Message> = match &dep.found {
+                Some(found) => text(truncate(found, 52)).color(TURBO_DARK_GRAY).into(),
+                None => row![
+                    text(&dep.install).color(TURBO_BLUE).width(Length::Fill),
+                    small_button(
+                        "Install",
+                        dep.auto.as_ref().filter(|_| !busy).map(|_| Message::DepInstall(index)),
+                    ),
+                    small_button("Copy", Some(Message::CopyText(dep.install.clone()))),
+                ]
+                .spacing(6)
+                .into(),
+            };
+            row![
+                text(mark).color(color).width(64),
+                column![
+                    text(dep.name).color(Color::BLACK),
+                    text(format!("{} ({need})", dep.purpose)).color(TURBO_DARK_GRAY).size(12),
+                ]
+                .width(300),
+                detail,
+            ]
+            .spacing(8)
+            .into()
+        });
+
+        let os = self.os.map_or("", Os::name);
+        let header = text(format!(" Dependencies - {os} ")).color(Color::WHITE);
+        let message = if dialog.checking && dialog.list.is_empty() {
+            "Checking installed tools...".to_string()
+        } else {
+            dialog.message.clone()
+        };
+        let buttons = row![
+            checkbox(self.check_at_startup)
+                .label("Check at startup")
+                .on_toggle(Message::ToggleStartupCheck)
+                .style(|theme, status| iced::widget::checkbox::Style {
+                    text_color: Some(Color::BLACK),
+                    ..iced::widget::checkbox::primary(theme, status)
+                }),
+            Space::new().width(Length::Fill),
+            small_button("Install guide on GitHub", Some(Message::OpenUrl(platform::INSTALL_GUIDE_URL))),
+            small_button("Re-check", (!busy).then_some(Message::ShowDeps)),
+            small_button("Close", Some(Message::CloseDeps)),
+        ]
+        .spacing(8);
+
+        let body = column![
+            container(header).width(Length::Fill).padding(2).style(|_| {
+                container::Style::default().background(TURBO_BLUE)
+            }),
+            column(rows).spacing(10).padding(10),
+            container(text(message).color(TURBO_RED)).padding([0, 10]),
+            container(buttons).padding(10),
+        ];
+
+        opaque(
+            container(
+                container(body).width(900).style(|_| container::Style {
+                    border: iced::Border::default().color(Color::BLACK).width(1),
+                    ..container::Style::default().background(TURBO_GRAY)
+                }),
+            )
+            .center(Length::Fill),
+        )
     }
 
     fn completion_popup(&self) -> Option<Element<'_, Message>> {
@@ -772,7 +1167,7 @@ impl Ide {
 
     fn status_bar(&self) -> Element<'_, Message> {
         let cursor = self.content.cursor().position;
-        let keys = " F2 Save  F3 Open  F5 Run  F9 Compile  Ctrl+Space Complete";
+        let keys = " F2 Save  F3 Open  F5 Run  Alt+F5 Output  F9 Compile";
         // A live diagnostic on the cursor line takes priority over the last status.
         let message = self
             .live
@@ -781,8 +1176,11 @@ impl Ide {
             .map_or(self.status.as_str(), |d| d.message.as_str());
         container(row![
             text(keys).color(Color::BLACK),
-            text(format!("   {}", truncate(message, 60))).color(TURBO_RED),
-            Space::new().width(Length::Fill),
+            // The message takes the remaining space and is clipped, so the
+            // server status and cursor position always stay visible.
+            container(text(format!("   {message}")).color(TURBO_RED).wrapping(text::Wrapping::None))
+                .width(Length::Fill)
+                .clip(true),
             text(format!("  {}  ", truncate(&self.lsp_status, 30))).color(TURBO_DARK_GRAY),
             text(format!("{}:{} ", cursor.line + 1, cursor.column + 1)).color(Color::BLACK),
         ])
@@ -810,8 +1208,10 @@ fn is_ident(c: char) -> bool {
 /// Global shortcuts, Turbo Pascal style (plus the usual Ctrl+S / Ctrl+O).
 fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<Message> {
     match key.as_ref() {
+        Key::Named(key::Named::F2) if modifiers.control() => Some(Message::OutputStop),
         Key::Named(key::Named::F2) => Some(Message::Save),
         Key::Named(key::Named::F3) => Some(Message::Open),
+        Key::Named(key::Named::F5) if modifiers.alt() => Some(Message::OutputToggle),
         Key::Named(key::Named::F5) => Some(Message::Run),
         Key::Named(key::Named::F9) if modifiers.control() => Some(Message::Run),
         Key::Named(key::Named::F9) => Some(Message::Compile),
@@ -870,8 +1270,24 @@ fn dropdown(menu: Menu) -> Element<'static, Message> {
                 ("Exit", "Alt+X", Message::Exit),
             ],
         ),
-        Menu::Run => (3, &[("Run", "F5", Message::Run)]),
+        Menu::Run => (
+            3,
+            &[
+                ("Run", "F5", Message::Run),
+                ("Run in external terminal", "", Message::RunExternal),
+                ("Program reset", "Ctrl+F2", Message::OutputStop),
+                ("User screen", "Alt+F5", Message::OutputToggle),
+            ],
+        ),
         Menu::Compile => (4, &[("Compile", "F9", Message::Compile)]),
+        Menu::Options => (6, &[("Dependencies...", "", Message::ShowDeps)]),
+        Menu::Help => (
+            8,
+            &[
+                ("Install guide (GitHub)", "", Message::OpenUrl(platform::INSTALL_GUIDE_URL)),
+                ("Project page (GitHub)", "", Message::OpenUrl(platform::GITHUB_URL)),
+            ],
+        ),
     };
 
     let entries = items.iter().map(|(label, keys, message)| {
@@ -880,7 +1296,7 @@ fn dropdown(menu: Menu) -> Element<'static, Message> {
             Space::new().width(Length::Fill),
             text(*keys).color(Color::BLACK),
         ])
-        .width(200)
+        .width(290)
         .padding([3, 10])
         .on_press(message.clone())
         .style(|_, status| button::Style {
@@ -898,6 +1314,22 @@ fn dropdown(menu: Menu) -> Element<'static, Message> {
     }))
     .padding(Padding::default().top(MENU_BAR_HEIGHT).left(index as f32 * MENU_TITLE_WIDTH))
     .into()
+}
+
+/// A Turbo-style dialog button; disabled when `message` is None.
+fn small_button(label: &str, message: Option<Message>) -> Element<'_, Message> {
+    let enabled = message.is_some();
+    button(text(format!(" {label} ")).color(if enabled { Color::BLACK } else { TURBO_DARK_GRAY }))
+        .padding([1, 6])
+        .on_press_maybe(message)
+        .style(move |_, status| button::Style {
+            background: Some(Background::Color(
+                if enabled && matches!(status, button::Status::Hovered) { TURBO_CYAN } else { TURBO_GREEN },
+            )),
+            text_color: Color::BLACK,
+            ..button::Style::default()
+        })
+        .into()
 }
 
 fn menu_title_style(open: bool, status: button::Status) -> button::Style {

@@ -1,7 +1,9 @@
 //! Build/check and run backend: drives cargo, rustc and python invisibly.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+
+use crate::platform;
 
 use serde_json::Value;
 
@@ -76,49 +78,48 @@ pub fn build(file: &Path) -> BuildResult {
     }
 }
 
-/// Launches a built program: console programs get their own console window
-/// that stays open, GUI programs are started directly.
-pub fn run(target: &RunTarget) -> std::io::Result<()> {
-    let mut command = launch_command(target);
-    command.current_dir(&target.cwd).spawn().map(|_| ())
+/// Launches a built program outside the IDE: console programs get their own
+/// terminal window that stays open, GUI programs are started directly.
+pub fn run_external(target: &RunTarget) -> Result<(), String> {
+    let mut command = if target.gui {
+        let mut command = platform::hidden_command(&target.program);
+        command.args(&target.args);
+        command
+    } else {
+        platform::external_terminal(&target.program, &target.args)?
+    };
+    command
+        .current_dir(&target.cwd)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Cannot run {}: {e}", target.program.display()))
 }
 
-#[cfg(windows)]
-fn launch_command(target: &RunTarget) -> Command {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-    if target.gui {
-        let mut command = Command::new(&target.program);
-        command.args(&target.args).creation_flags(CREATE_NO_WINDOW);
-        return command;
+/// Starts a built program with stdin/stdout/stderr piped to the IDE.
+pub fn spawn_captured(target: &RunTarget) -> std::io::Result<Child> {
+    let mut command = platform::hidden_command(&target.program);
+    let is_python = target
+        .program
+        .file_stem()
+        .is_some_and(|s| s.to_string_lossy().starts_with("python"));
+    if is_python {
+        command.arg("-u"); // unbuffered, so output appears as it is printed
     }
-
-    let mut line = quote(&target.program.to_string_lossy());
-    for arg in &target.args {
-        line.push(' ');
-        line.push_str(&quote(arg));
-    }
-    let mut command = Command::new("cmd.exe");
     command
-        .raw_arg(format!(
-            "/v:on /c \"{line} & echo. & echo [Process exited with code !errorlevel!] & pause\""
-        ))
-        .creation_flags(CREATE_NEW_CONSOLE);
-    command
+        .args(&target.args)
+        .current_dir(&target.cwd)
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("TERM", "dumb")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
 }
 
-#[cfg(not(windows))]
-fn launch_command(target: &RunTarget) -> Command {
-    let mut command = Command::new(&target.program);
-    command.args(&target.args);
-    command
-}
-
-#[cfg(windows)]
-fn quote(s: &str) -> String {
-    format!("\"{s}\"")
+/// A tool command, resolved even when its directory is missing from PATH.
+fn tool(name: &str) -> Command {
+    platform::hidden_command(platform::find_program(name).unwrap_or_else(|| PathBuf::from(name)))
 }
 
 fn find_cargo_manifest(file: &Path) -> Option<PathBuf> {
@@ -130,7 +131,7 @@ fn find_cargo_manifest(file: &Path) -> Option<PathBuf> {
 
 fn build_cargo(manifest: &Path) -> BuildResult {
     let dir = manifest.parent().unwrap_or(Path::new("."));
-    let output = match hidden(Command::new("cargo"))
+    let output = match tool("cargo")
         .args(["build", "--message-format=json"])
         .current_dir(dir)
         .output()
@@ -193,7 +194,7 @@ fn build_rustc(file: &Path) -> BuildResult {
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("main");
     let exe = out_dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
 
-    let output = match hidden(Command::new("rustc"))
+    let output = match tool("rustc")
         .args(["--edition", "2024", "--error-format=json"])
         .arg(file)
         .arg("-o")
@@ -256,7 +257,7 @@ fn parse_rustc_diagnostic(message: &Value, base: &Path) -> Option<Diagnostic> {
 
 fn check_python(file: &Path) -> BuildResult {
     let dir = file.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let output = match hidden(Command::new("python"))
+    let output = match tool(platform::python())
         .args(["-c", PYTHON_CHECK])
         .arg(file)
         .current_dir(&dir)
@@ -276,12 +277,12 @@ fn check_python(file: &Path) -> BuildResult {
         });
 
     if output.status.success() {
-        let program = if gui && cfg!(windows) { "pythonw" } else { "python" };
+        let program = if gui && cfg!(windows) { "pythonw" } else { platform::python() };
         return BuildResult {
             success: true,
             diagnostics: Vec::new(),
             target: Some(RunTarget {
-                program: PathBuf::from(program),
+                program: platform::find_program(program).unwrap_or_else(|| PathBuf::from(program)),
                 args: vec![file.to_string_lossy().into_owned()],
                 cwd: dir,
                 gui,
@@ -304,16 +305,6 @@ fn check_python(file: &Path) -> BuildResult {
         },
         Err(_) => BuildResult::failed(String::from_utf8_lossy(&output.stderr).trim().to_string()),
     }
-}
-
-/// Keeps background tools from flashing a console window.
-fn hidden(mut command: Command) -> Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    command
 }
 
 #[cfg(test)]
