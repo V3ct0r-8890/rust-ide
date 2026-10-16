@@ -1,11 +1,15 @@
 //! rust-ide: a Turbo Pascal–style IDE for Rust and Python (iced GUI front end).
 
+// Release builds are GUI apps on Windows: no console window when started.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod deps;
 mod highlight;
 mod lsp;
 mod output;
 mod platform;
 mod runner;
+mod vim;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,7 +46,39 @@ const MESSAGES_HEIGHT: f32 = 140.0;
 const COMPLETION_ROWS: usize = 10;
 const OUTPUT_INPUT: &str = "output-input";
 
+const USAGE: &str = "\
+Usage: rust-ide [OPTIONS] [FILE]
+
+Turbo Pascal-style IDE for Rust and Python.
+
+Options:
+  --software   use software rendering (for broken GPU drivers)
+  --version    print the version and exit
+  --help       print this help and exit
+
+Install guide: https://github.com/V3ct0r-8890/rust-ide/blob/main/docs/INSTALL.md";
+
 fn main() -> iced::Result {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let info = args.iter().any(|a| matches!(a.as_str(), "--version" | "-V" | "--help" | "-h"));
+    #[cfg(windows)]
+    if info {
+        // A GUI-subsystem exe has no console; borrow the terminal it was started from.
+        unsafe extern "system" {
+            fn AttachConsole(process_id: u32) -> i32;
+        }
+        // SAFETY: plain Win32 call; ATTACH_PARENT_PROCESS = u32::MAX.
+        unsafe { AttachConsole(u32::MAX) };
+    }
+    let _ = info;
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("rust-ide {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        return Ok(());
+    }
     if let Err(message) = platform::gui_preflight() {
         eprintln!("{message}");
         std::process::exit(1);
@@ -66,6 +102,7 @@ fn main() -> iced::Result {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Menu {
     File,
+    Edit,
     Run,
     Compile,
     Options,
@@ -150,6 +187,18 @@ struct Ide {
     os: Option<Os>,
     deps: Option<DepsDialog>,
     check_at_startup: bool,
+    /// Vim emulation, when enabled in Options.
+    vim: Option<vim::Vim>,
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    /// True while consecutive typing is being collected into one undo step.
+    undo_group: bool,
+}
+
+#[derive(Clone)]
+struct Snapshot {
+    text: String,
+    cursor: Cursor,
 }
 
 #[derive(Debug, Clone)]
@@ -187,6 +236,10 @@ enum Message {
     CloseDeps,
     CopyText(String),
     OpenUrl(&'static str),
+    Vim(vim::Key),
+    Undo,
+    Redo,
+    ToggleVim,
 }
 
 impl Ide {
@@ -196,6 +249,9 @@ impl Ide {
         let mut ide = Self::default();
         let os = Os::detect();
         ide.os = Some(os);
+        if platform::read_setting("vim").as_deref() == Some("true") {
+            ide.vim = Some(vim::Vim::default());
+        }
         ide.check_at_startup =
             platform::read_setting("check_dependencies").as_deref() != Some("false");
         let file = std::env::args_os().skip(1).find(|a| !a.to_string_lossy().starts_with("--"));
@@ -335,6 +391,27 @@ impl Ide {
             }
             Message::CompletionNav(nav) => {
                 self.completion_nav(nav);
+                Task::none()
+            }
+            Message::Vim(key) => self.vim_key(key),
+            Message::Undo => {
+                self.undo();
+                Task::none()
+            }
+            Message::Redo => {
+                self.redo();
+                Task::none()
+            }
+            Message::ToggleVim => {
+                self.vim = match self.vim {
+                    Some(_) => None,
+                    None => Some(vim::Vim::default()),
+                };
+                let on = self.vim.is_some();
+                self.status = format!("Vim mode {}", if on { "on" } else { "off" });
+                if let Err(e) = platform::write_setting("vim", if on { "true" } else { "false" }) {
+                    self.status = format!("Cannot save settings: {e}");
+                }
                 Task::none()
             }
             Message::CompletionPick(index) => {
@@ -524,6 +601,16 @@ impl Ide {
             _ => None,
         };
         let is_edit = action.is_edit();
+        // Typing is undone in groups: a group starts at the first edit after
+        // the cursor was moved, and each new line starts a new group.
+        if is_edit && !self.undo_group {
+            self.push_undo();
+            self.undo_group = true;
+        }
+        let new_line = matches!(action, Action::Edit(Edit::Enter));
+        if !is_edit || new_line {
+            self.undo_group = false;
+        }
         self.content.perform(action);
 
         if is_edit {
@@ -548,8 +635,90 @@ impl Ide {
     fn char_before_cursor(&self, n: usize) -> Option<char> {
         let position = self.content.cursor().position;
         let line = self.content.line(position.line)?;
-        let column = position.column.checked_sub(n + 1)?;
-        line.text.chars().nth(column)
+        line.text.get(..position.column)?.chars().rev().nth(n)
+    }
+
+    // ----- Undo -----
+
+    /// Records the buffer before a change.
+    fn push_undo(&mut self) {
+        const LIMIT: usize = 200;
+        self.undo.push(Snapshot { text: self.content.text(), cursor: self.content.cursor() });
+        if self.undo.len() > LIMIT {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+
+    fn undo(&mut self) {
+        let Some(snapshot) = self.undo.pop() else {
+            self.status = "Nothing to undo".into();
+            return;
+        };
+        let current = Snapshot { text: self.content.text(), cursor: self.content.cursor() };
+        self.redo.push(current);
+        self.restore(snapshot);
+    }
+
+    fn redo(&mut self) {
+        let Some(snapshot) = self.redo.pop() else {
+            self.status = "Nothing to redo".into();
+            return;
+        };
+        let current = Snapshot { text: self.content.text(), cursor: self.content.cursor() };
+        self.undo.push(current);
+        self.restore(snapshot);
+    }
+
+    fn restore(&mut self, snapshot: Snapshot) {
+        self.content = text_editor::Content::with_text(&snapshot.text);
+        vim::place(&mut self.content, snapshot.cursor.position);
+        self.undo_group = false;
+        self.completion = None;
+        self.modified = true;
+        self.diagnostics.clear();
+        self.lsp_change();
+    }
+
+    // ----- Vim -----
+
+    fn vim_key(&mut self, key: vim::Key) -> Task<Message> {
+        let Some(vim) = &mut self.vim else { return Task::none() };
+        let before = Snapshot { text: self.content.text(), cursor: self.content.cursor() };
+        let effects = vim.key(key, &mut self.content);
+        self.undo_group = false;
+
+        let mut tasks = Vec::new();
+        for effect in effects {
+            match effect {
+                vim::Effect::Edited => {
+                    self.undo.push(before.clone());
+                    self.redo.clear();
+                    self.modified = true;
+                    self.diagnostics.clear();
+                    self.lsp_change();
+                }
+                vim::Effect::Undo => self.undo(),
+                vim::Effect::Redo => self.redo(),
+                vim::Effect::Status(status) => self.status = status,
+                vim::Effect::Save => tasks.push(self.save(AfterSave::Nothing)),
+                vim::Effect::Quit if self.modified => {
+                    self.status = "No write since last change (add ! to override)".into();
+                }
+                vim::Effect::Quit | vim::Effect::ForceQuit => tasks.push(iced::exit()),
+                vim::Effect::SaveQuit => {
+                    if self.path.is_none() {
+                        self.status = "No file name (use F2 to save first)".into();
+                    } else {
+                        tasks.push(self.save(AfterSave::Nothing));
+                        if !self.modified {
+                            tasks.push(iced::exit());
+                        }
+                    }
+                }
+            }
+        }
+        Task::batch(tasks)
     }
 
     /// Returns true (and asks) when unsaved edits would be lost and this is
@@ -659,13 +828,14 @@ impl Ide {
                 return;
             }
         }
-        self.content.move_to(Cursor {
-            position: Position {
-                line: diagnostic.line - 1,
-                column: diagnostic.column.saturating_sub(1),
-            },
-            selection: None,
-        });
+        // Diagnostics count characters; the editor counts bytes.
+        let line = diagnostic.line - 1;
+        let text = self.content.line(line).map(|l| l.text.into_owned()).unwrap_or_default();
+        let column = text
+            .char_indices()
+            .nth(diagnostic.column.saturating_sub(1))
+            .map_or(text.len(), |(i, _)| i);
+        vim::place(&mut self.content, Position { line, column });
     }
 
     fn is_current_file(&self, file: &Path) -> bool {
@@ -778,19 +948,13 @@ impl Ide {
         };
         let position = self.content.cursor().position;
         let line = self.content.line(position.line).map(|l| l.text.into_owned()).unwrap_or_default();
-        let word_len = line
-            .chars()
-            .take(position.column)
-            .collect::<Vec<_>>()
-            .iter()
-            .rev()
-            .take_while(|c| is_ident(**c))
-            .count();
+        let before = line.get(..position.column).unwrap_or(&line);
+        let word_start = before.trim_end_matches(is_ident).len(); // bytes
 
         self.next_completion_id += 1;
         self.completion = Some(Completion {
             id: self.next_completion_id,
-            anchor: Position { line: position.line, column: position.column - word_len },
+            anchor: Position { line: position.line, column: word_start },
             items: Vec::new(),
             selected: 0,
             waiting: true,
@@ -799,7 +963,7 @@ impl Ide {
             id: self.next_completion_id,
             path,
             line: position.line,
-            column: position.column,
+            column: before.chars().count(), // the LSP client works in characters
             trigger,
         });
     }
@@ -812,8 +976,7 @@ impl Ide {
             return None;
         }
         let line = self.content.line(position.line)?;
-        let prefix: String =
-            line.text.chars().skip(anchor.column).take(position.column - anchor.column).collect();
+        let prefix = line.text.get(anchor.column..position.column)?.to_string();
         prefix.chars().all(is_ident).then_some(prefix)
     }
 
@@ -863,6 +1026,8 @@ impl Ide {
         };
         let typed = self.completion_prefix().map_or(0, |p| p.chars().count());
         self.completion = None;
+        self.push_undo();
+        self.undo_group = false;
         for _ in 0..typed {
             self.content.perform(Action::Edit(Edit::Backspace));
         }
@@ -878,6 +1043,7 @@ impl Ide {
         let menu_bar = container(row(MENU_TITLES.iter().map(|&title| {
             let menu = match title {
                 "File" => Some(Menu::File),
+                "Edit" => Some(Menu::Edit),
                 "Run" => Some(Menu::Run),
                 "Compile" => Some(Menu::Compile),
                 "Options" => Some(Menu::Options),
@@ -896,6 +1062,7 @@ impl Ide {
         .style(|_| container::Style::default().background(TURBO_GRAY));
 
         let popup_open = self.completion.is_some();
+        let vim_mode = self.vim.as_ref().map(|v| (v.mode, v.command.is_some()));
         let editor = text_editor(&self.content)
             .on_action(Message::Edit)
             .height(Length::Fill)
@@ -910,9 +1077,15 @@ impl Ide {
                 if popup_open && let Some(nav) = completion_key(&press.key) {
                     return Some(Binding::Custom(Message::CompletionNav(nav)));
                 }
-                shortcut(&press.key, press.physical_key, press.modifiers)
-                    .map(Binding::Custom)
-                    .or_else(|| Binding::from_key_press(press))
+                if let Some(message) = shortcut(&press.key, press.physical_key, press.modifiers) {
+                    return Some(Binding::Custom(message));
+                }
+                if let Some((mode, command)) = vim_mode
+                    && let Some(key) = vim_binding(&press, mode, command)
+                {
+                    return Some(Binding::Custom(Message::Vim(key)));
+                }
+                Binding::from_key_press(press)
             })
             .style(|theme, status| text_editor::Style {
                 background: Background::Color(TURBO_BLUE),
@@ -950,7 +1123,7 @@ impl Ide {
                     mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
                         .on_press(Message::CloseMenu),
                 )
-                .push(dropdown(menu));
+                .push(dropdown(menu, self.vim.is_some()));
         }
         layers.into()
     }
@@ -1165,6 +1338,15 @@ impl Ide {
         .into()
     }
 
+    /// The cursor column in characters (the editor reports bytes).
+    fn cursor_char_column(&self) -> usize {
+        let position = self.content.cursor().position;
+        self.content
+            .line(position.line)
+            .and_then(|l| l.text.get(..position.column).map(|s| s.chars().count()))
+            .unwrap_or(position.column)
+    }
+
     fn status_bar(&self) -> Element<'_, Message> {
         let cursor = self.content.cursor().position;
         let keys = " F2 Save  F3 Open  F5 Run  Alt+F5 Output  F9 Compile";
@@ -1182,7 +1364,9 @@ impl Ide {
                 .width(Length::Fill)
                 .clip(true),
             text(format!("  {}  ", truncate(&self.lsp_status, 30))).color(TURBO_DARK_GRAY),
-            text(format!("{}:{} ", cursor.line + 1, cursor.column + 1)).color(Color::BLACK),
+            text(self.vim.as_ref().map(|v| format!("{}  ", v.status())).unwrap_or_default())
+                .color(TURBO_BLUE),
+            text(format!("{}:{} ", cursor.line + 1, self.cursor_char_column() + 1)).color(Color::BLACK),
         ])
         .padding([2, 4])
         .height(STATUS_BAR_HEIGHT)
@@ -1220,9 +1404,35 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
             Some('x') if modifiers.alt() => Some(Message::Exit),
             Some('s') if modifiers.command() => Some(Message::Save),
             Some('o') if modifiers.command() => Some(Message::Open),
+            Some('z') if modifiers.command() && modifiers.shift() => Some(Message::Redo),
+            Some('z') if modifiers.command() => Some(Message::Undo),
+            Some('y') if modifiers.command() => Some(Message::Redo),
             _ => None,
         },
     }
+}
+
+/// Keys that go to the Vim engine instead of the editor's default handling.
+/// Insert mode only sends Esc; arrows, Page Up/Down etc. keep their defaults.
+fn vim_binding(press: &KeyPress, mode: vim::Mode, command: bool) -> Option<vim::Key> {
+    let named = match press.key.as_ref() {
+        Key::Named(key::Named::Escape) => Some(vim::Key::Esc),
+        Key::Named(key::Named::Enter) => Some(vim::Key::Enter),
+        Key::Named(key::Named::Backspace) => Some(vim::Key::Backspace),
+        Key::Named(key::Named::Delete) => Some(vim::Key::Delete),
+        _ => None,
+    };
+    if mode == vim::Mode::Insert && !command {
+        return named.filter(|k| *k == vim::Key::Esc);
+    }
+    if named.is_some() {
+        return named;
+    }
+    if press.modifiers.control() {
+        return press.key.to_latin(press.physical_key).map(vim::Key::Ctrl);
+    }
+    let ch = press.text.as_deref()?.chars().find(|c| !c.is_control())?;
+    Some(vim::Key::Char(ch))
 }
 
 fn completion_key(key: &Key) -> Option<Nav> {
@@ -1258,8 +1468,14 @@ fn save_as_dialog(after: AfterSave) -> Task<Message> {
     )
 }
 
-fn dropdown(menu: Menu) -> Element<'static, Message> {
+fn dropdown(menu: Menu, vim_on: bool) -> Element<'static, Message> {
+    let vim_label = if vim_on { "Vim mode           [x]" } else { "Vim mode           [ ]" };
+    let options = [
+        ("Dependencies...", "", Message::ShowDeps),
+        (vim_label, "", Message::ToggleVim),
+    ];
     let (index, items): (usize, &[(&str, &str, Message)]) = match menu {
+        Menu::Edit => (1, &[("Undo", "Ctrl+Z", Message::Undo), ("Redo", "Ctrl+Y", Message::Redo)]),
         Menu::File => (
             0,
             &[
@@ -1280,7 +1496,7 @@ fn dropdown(menu: Menu) -> Element<'static, Message> {
             ],
         ),
         Menu::Compile => (4, &[("Compile", "F9", Message::Compile)]),
-        Menu::Options => (6, &[("Dependencies...", "", Message::ShowDeps)]),
+        Menu::Options => (6, &options),
         Menu::Help => (
             8,
             &[

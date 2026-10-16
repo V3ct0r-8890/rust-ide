@@ -2,8 +2,15 @@
 name = "rust-ide"
 version = "0.1.0"
 edition = "2024"
+description = "Turbo Pascal-style IDE for Rust and Python"
+repository = "https://github.com/V3ct0r-8890/rust-ide"
 
 [dependencies]
 iced = { version = "0.14.0", features = ["advanced"] }
 rfd = "0.17.2"
 serde_json = "1.0.154"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

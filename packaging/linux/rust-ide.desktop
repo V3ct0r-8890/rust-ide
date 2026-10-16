@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Rust IDE
+Comment=Turbo Pascal-style IDE for Rust and Python
+Exec=rust-ide %f
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;IDE;
+MimeType=text/rust;text/x-rust;text/x-python;text/x-python3;

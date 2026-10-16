@@ -34,6 +34,7 @@ Back-end engines (run invisibly by the IDE, never typed by the user):
 | Alt+F5 | Show / hide the Output window (Turbo Pascal's "User screen"); Esc also hides it |
 | Ctrl+F2 | Program reset: stop the running program |
 | Ctrl+Space | Code completion (also opens automatically after `.` and `::`) |
+| Ctrl+Z / Ctrl+Y | Undo / redo (Ctrl+Shift+Z also redoes) |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
 The Output window shows the program's output and has an input line for programs that read
@@ -41,6 +42,34 @@ from the keyboard. *Run > Run in external terminal* opens a separate terminal in
 
 Click a line in the Messages panel to jump to that error. While you type, the language server's
 errors are shown live: red/magenta text in the editor, the "Messages (live)" panel, and the status bar. `rust-ide path/to/file.rs` opens a file at startup.
+
+## Vim mode
+
+Turn it on in **Options > Vim mode** (remembered between sessions). The status bar shows
+`NORMAL`, `-- INSERT --` or `-- VISUAL --` and any pending command. Supported:
+
+- Modes: `i a I A o O s S` to insert, `Esc` back to Normal, `v` for Visual
+- Motions (with counts): `h j k l w b e 0 ^ $ gg G`, `Ctrl+D`/`Ctrl+U`
+- Operators with motions: `d c y > <` (e.g. `dw`, `c$`, `y2j`, `dG`), doubled for lines (`dd`, `3yy`, `>>`)
+- Editing: `x X D C Y p P J r<char> u Ctrl+R`
+- Visual: motions, then `d x y c > <`
+- Search: `/text` then `n` / `N`
+- Commands: `:w`, `:q`, `:q!`, `:wq`, `:x`, `:<line>`
+
+The function keys (F2, F5, F9, Alt+F5, ...) keep working in every mode.
+
+## Download
+
+Prebuilt packages are on the [Releases page](https://github.com/V3ct0r-8890/rust-ide/releases):
+
+- **Windows 10/11**: `rust-ide-<version>-windows-x86_64.zip`. Unzip and run `rust-ide.exe`;
+  `install-deps.ps1` installs Rust (GNU toolchain), MinGW, Python and the language servers.
+- **Linux x86_64** (Ubuntu 24.04+, Fedora, RHEL/Rocky/AlmaLinux 9 and 10):
+  `rust-ide-<version>-linux-x86_64.tar.gz`. Unpack, run `./install-deps.sh` for the tools
+  and `./install.sh` to add `rust-ide` to `~/.local/bin` and your application menu.
+
+To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging/package-linux.sh`
+(output in `dist/`).
 
 ## Milestones
 

@@ -1,0 +1,96 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds the packages and publishes a GitHub Release.
+# Running it by hand (Actions > Release > Run workflow) only builds artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux package (built on AlmaLinux 9)
+    runs-on: ubuntu-24.04
+    # AlmaLinux 9 has glibc 2.34, so the binary also runs on RHEL 9/10,
+    # Fedora and Ubuntu 24.04+.
+    container: almalinux:9
+    steps:
+      - uses: actions/checkout@v4
+      - run: dnf install -y gcc python3 git
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: sh packaging/package-linux.sh
+      - run: dist/rust-ide-*/rust-ide --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-package
+          path: dist/*.tar.gz
+
+  linux-check:
+    name: Runs on ${{ matrix.image }}
+    needs: linux
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "fedora:latest", "almalinux:10"]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-package
+      - run: tar -xzf rust-ide-*.tar.gz && ./rust-ide-*/rust-ide --version
+
+  windows:
+    name: Windows package (GNU toolchain)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+      - name: Make MinGW binutils (dlltool) available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command dlltool -ErrorAction SilentlyContinue)) {
+            if (Test-Path C:\mingw64\bin\dlltool.exe) {
+              "C:\mingw64\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            } else {
+              choco install mingw -y --no-progress
+              "C:\ProgramData\mingw64\mingw64\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            }
+          }
+      - shell: pwsh
+        run: ./packaging/package-windows.ps1
+      - shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist -Recurse -Filter rust-ide.exe | Select-Object -First 1
+          & $exe.FullName --version | Out-File version.txt
+          Get-Content version.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: dist/*.zip
+
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, linux-check, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" rust-ide-*.zip rust-ide-*.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --title "rust-ide $GITHUB_REF_NAME" \
+            --notes "Downloads: Windows 10/11 (.zip) and Linux x86_64 for Ubuntu 24.04+, Fedora, RHEL 9/10 (.tar.gz). Run install-deps first if tools are missing; see docs/INSTALL.md."

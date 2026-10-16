@@ -18,6 +18,11 @@ This page lists the same steps for each supported system.
 Programs normally run inside the IDE's **Output** window (F5, then
 Alt+F5 to show or hide it), so a terminal emulator is not needed.
 
+**Quickest way:** download the package for your system from the
+[Releases page](https://github.com/V3ct0r-8890/rust-ide/releases) and run the script inside it:
+`install-deps.ps1` on Windows, `./install-deps.sh` on Linux. The sections below
+list what those scripts do, step by step.
+
 - [Windows 10/11](#windows-1011)
 - [Ubuntu 24.04 LTS and newer](#ubuntu-2404-lts-and-newer)
 - [Fedora, RHEL 9/10, Rocky Linux, AlmaLinux](#fedora-rhel-910-rocky-linux-almalinux)
