@@ -76,7 +76,8 @@ To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging
 Done: editor, build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
 and completion, undo, basic Vim mode, Windows and Linux packages.
 
-Next: Search menu, debugger (F7/F8, breakpoints, Watch), several open files, TUI front end.
+Next: Search menu, debugger (F7/F8, breakpoints, Watch), several open files, TUI front end,
+new-project templates (Simple / Low / Medium / Complex for Rust and Python).
 
 See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limitations.
 

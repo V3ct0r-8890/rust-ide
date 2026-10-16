@@ -37,6 +37,21 @@ In suggested order.
 ### 5. Vim mode, more commands
 - Line-wise Visual mode (`V`), repeat (`.`), text objects (`ciw`, `di(`), `f`/`t` motions, marks, block cursor.
 
+### 6. New project from templates
+- **File > New project...** dialog: choose the language (Rust or Python), a size
+  (Simple, Low, Medium or Complex), a project name and a folder. The IDE generates a general
+  starting template and opens its main file.
+- Proposed template contents (to be confirmed before implementing):
+
+| Size | Rust | Python |
+|---|---|---|
+| Simple | Cargo project with one `main.rs` (hello world) | One script `main.py` |
+| Low | Binary crate split into a few modules, with unit tests | Package folder with `__main__.py`, a module and pytest tests |
+| Medium | Library + binary crate, error handling, config file, integration tests, README | `pyproject.toml`, `src/` layout, `.venv` setup, pytest, lint settings, README |
+| Complex | Cargo workspace (core library, CLI, extra crates), tests, benchmarks, CI workflow | Multi-module `src/` package with CLI entry point, config, logging, tests, CI workflow |
+
+- Templates should build and run with F5 straight away, and pass their own tests.
+
 ## Known limitations
 
 - **Completion popup** sits in the bottom-right corner of the editor, not next to the cursor: the editor widget does not report the cursor's screen position.
