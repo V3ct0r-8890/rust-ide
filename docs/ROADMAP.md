@@ -13,6 +13,7 @@ Last updated: 2026-10-17. Latest release: [v0.1.0](https://github.com/V3ct0r-889
 | Language servers | rust-analyzer and basedpyright/pyright: live errors in the editor and a live Messages panel, completion popup (Ctrl+Space, auto after `.` and `::`) |
 | Editing | Undo/redo (Ctrl+Z, Ctrl+Y); basic Vim mode (Options > Vim mode) |
 | Debugger | Debug menu with Turbo Pascal keys: Ctrl+F8 breakpoint, F7 trace into, F8 step over, Shift+F8 step out, F4 go to cursor, Shift+F5 debug run, Ctrl+F7 watch, Ctrl+F2 reset. Rust through `gdb -i dap` (gdb 14+), Python through debugpy. Breakpoints and the execution line are colored in the editor; the debug panel shows watches, arguments and locals, and the call stack |
+| Windows | Several open files: tabs under the menu bar, F6 / Shift+F6, Alt+1-9, Window menu (Alt+0) with the window list, Alt+F3 close; each window has its own text, undo and diagnostics; F3, error jumps and the debugger open files in windows; `rust-ide a.rs b.py` opens several files |
 | Keyboard | Everything reachable from the keyboard: F1 shortcut list, F10 / Alt+letter menus with arrow keys and red hotkey letters, Dependencies dialog keys, Alt+F8/Alt+F7 through messages, Tab/Shift+Tab indent; Turbo-style block cursor; the editor has focus at startup |
 | Search | Search menu: Find (Ctrl+F) with all matches highlighted and a match count, Replace / Replace all (Ctrl+H, undoable), Search again (Ctrl+L), Go to line (Ctrl+G) |
 | Platforms | Windows 10/11 (GNU toolchain, no Visual Studio), Ubuntu 24.04+, Fedora, RHEL/Rocky/AlmaLinux 9 and 10 |
@@ -23,16 +24,13 @@ Last updated: 2026-10-17. Latest release: [v0.1.0](https://github.com/V3ct0r-889
 
 In suggested order.
 
-### 1. Several open files (Window menu)
-- Tabs or a window list, switching between files, per-file undo and language-server state.
-
-### 2. TUI front end
+### 1. TUI front end
 - The same IDE in a terminal (ratatui), sharing the core with the GUI.
 
-### 3. Vim mode, more commands
+### 2. Vim mode, more commands
 - Line-wise Visual mode (`V`), repeat (`.`), text objects (`ciw`, `di(`), `f`/`t` motions, marks, block cursor.
 
-### 4. New project from templates
+### 3. New project from templates
 - **File > New project...** dialog: choose the language (Rust or Python), a size
   (Simple, Low, Medium or Complex), a project name and a folder. The IDE generates a general
   starting template and opens its main file.
@@ -54,6 +52,7 @@ In suggested order.
 - **Block cursor** is drawn only while the IDE window has focus (it follows the editor's input-method caret).
 - **Debugging programs that read the keyboard** is not supported yet: the debugger has no input line. Use F5 for those.
 - **Breakpoints stay on their line numbers** when lines are added or removed above them.
+- **Live errors** are shown for the active window; a background window gets fresh ones when you switch to it.
 - **Undo** restores whole-text snapshots, so the view can jump after a large undo.
 - **WSL:** software rendering (`--software`) is unstable under WSLg; the default GPU renderer works.
 - **Not yet tested with a real keyboard:** Alt+F5 and typing into the Output window, and the Install button in Options > Dependencies. Automated tests send synthetic keys, which Windows handles differently.

@@ -32,7 +32,7 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | F1 | Keyboard shortcut list |
 | F10 / Alt+letter | Open a menu (Alt+F File, Alt+E Edit, Alt+S Search, Alt+R Run, Alt+C Compile, Alt+O Options, Alt+H Help); arrows and Enter, or the red letter, choose an item |
 | F2 / Ctrl+S | Save (asks for a name the first time) |
-| F3 / Ctrl+O | Open |
+| F3 / Ctrl+O | Open (each file in its own window) |
 | F9 | Compile / syntax-check, list errors, jump to the first one |
 | F5 / Ctrl+F9 | Save, compile and run in the Output window (GUI programs open their own window) |
 | Alt+F5 | Show / hide the Output window (Turbo Pascal's "User screen"); Esc also hides it |
@@ -50,13 +50,16 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | F4 | Go to cursor (run to the cursor line) |
 | Shift+F5 | Debug run to the next breakpoint; F5 / Ctrl+F9 continue while debugging |
 | Ctrl+F7 | Add a watch expression |
+| F6 / Shift+F6 | Next / previous window (open files are shown as tabs) |
+| Alt+1 ... Alt+9, Alt+0 | Go to window 1-9; Alt+0 lists the windows |
+| Alt+F3 | Close the window |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
 The Output window shows the program's output and has an input line for programs that read
 from the keyboard. *Run > Run in external terminal* opens a separate terminal instead.
 
 Click a line in the Messages panel to jump to that error. While you type, the language server's
-errors are shown live: red/magenta text in the editor, the "Messages (live)" panel, and the status bar. `rust-ide path/to/file.rs` opens a file at startup.
+errors are shown live: red/magenta text in the editor, the "Messages (live)" panel, and the status bar. `rust-ide a.rs b.py` opens files at startup, each in its own window.
 
 ## Vim mode
 
@@ -88,11 +91,11 @@ To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging
 
 ## Status
 
-Done: debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
+Done: several open files (tabs, F6, Window menu), debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
 and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
 Windows and Linux packages.
 
-Next: several open files, TUI front end,
+Next: TUI front end,
 new-project templates (Simple / Low / Medium / Complex for Rust and Python).
 
 See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limitations.

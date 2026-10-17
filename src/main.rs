@@ -62,9 +62,13 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Menus", "Red letter", "Run that menu item"),
     ("Menus", "Esc", "Close the menu, dialog or panel"),
     ("File", "F2 / Ctrl+S", "Save"),
-    ("File", "F3 / Ctrl+O", "Open"),
-    ("File", "Alt+F N / A", "New / Save as (File menu)"),
+    ("File", "F3 / Ctrl+O", "Open (in a new window)"),
+    ("File", "Alt+F N / A", "New window / Save as (File menu)"),
     ("File", "Alt+X", "Exit (press twice to discard changes)"),
+    ("Window", "F6 / Shift+F6", "Next / previous window"),
+    ("Window", "Alt+1 ... Alt+9", "Go to window 1-9"),
+    ("Window", "Alt+0", "Window list (Window menu)"),
+    ("Window", "Alt+F3", "Close the window (press twice to discard changes)"),
     ("Edit", "Ctrl+Z / Ctrl+Y", "Undo / redo (Ctrl+Shift+Z also redoes)"),
     ("Edit", "Tab / Shift+Tab", "Indent / unindent"),
     ("Edit", "Ctrl+Space", "Code completion (also after . and ::)"),
@@ -102,7 +106,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
 ];
 
 const USAGE: &str = "\
-Usage: rust-ide [OPTIONS] [FILE]
+Usage: rust-ide [OPTIONS] [FILE...]
 
 Turbo Pascal-style IDE for Rust and Python.
 
@@ -208,7 +212,7 @@ enum NavKey {
 
 /// One entry of a drop-down menu.
 struct MenuItem {
-    label: &'static str,
+    label: String,
     /// The letter (shown in red) that runs the item while the menu is open.
     hotkey: char,
     keys: &'static str,
@@ -216,12 +220,11 @@ struct MenuItem {
     message: Option<Message>,
 }
 
-fn item(label: &'static str, hotkey: char, keys: &'static str, message: Message) -> MenuItem {
-    MenuItem { label, hotkey, keys, message: Some(message) }
+fn item(label: impl Into<String>, hotkey: char, keys: &'static str, message: Message) -> MenuItem {
+    MenuItem { label: label.into(), hotkey, keys, message: Some(message) }
 }
 
-fn menu_items(menu: Menu, vim_on: bool) -> Vec<MenuItem> {
-    let later = |label| MenuItem { label, hotkey: ' ', keys: "", message: None };
+fn menu_items(menu: Menu, vim_on: bool, windows: &[String], active: usize) -> Vec<MenuItem> {
     match menu {
         Menu::File => vec![
             item("New", 'n', "", Message::New),
@@ -267,7 +270,21 @@ fn menu_items(menu: Menu, vim_on: bool) -> Vec<MenuItem> {
             item("Dependencies...", 'd', "", Message::ShowDeps),
             item(if vim_on { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
         ],
-        Menu::Window => vec![later("Several windows: coming soon")],
+        Menu::Window => {
+            const ALT_KEYS: [&str; 9] = ["Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5", "Alt+6", "Alt+7", "Alt+8", "Alt+9"];
+            let mut items = vec![
+                item("Next", 'n', "F6", Message::NextWindow),
+                item("Previous", 'p', "Shift+F6", Message::PrevWindow),
+                item("Close", 'c', "Alt+F3", Message::CloseWindow),
+            ];
+            for (index, name) in windows.iter().enumerate() {
+                let mark = if index == active { ">" } else { " " };
+                let hotkey = char::from_digit((index as u32 + 1) % 10, 10).unwrap_or(' ');
+                let keys = ALT_KEYS.get(index).copied().unwrap_or("");
+                items.push(item(format!("{}{mark}{name}", index + 1), hotkey, keys, Message::SelectWindow(index)));
+            }
+            items
+        }
         Menu::Help => vec![
             item("Keyboard shortcuts", 'k', "F1", Message::ToggleHelp),
             item("Install guide (GitHub)", 'i', "", Message::OpenUrl(platform::INSTALL_GUIDE_URL)),
@@ -336,8 +353,7 @@ struct DebugSession {
 /// Commands that throw away unsaved edits and therefore need a second press.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Discard {
-    New,
-    Open,
+    Close,
     Exit,
 }
 
@@ -429,6 +445,10 @@ struct Ide {
     watches: Vec<(String, String)>,
     debug: Option<DebugSession>,
     debug_run_id: u64,
+    /// The other open windows, in window order without the active one.
+    background: Vec<Buffer>,
+    /// The active window's position in the window order.
+    active: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -445,6 +465,19 @@ struct SearchBar {
     query: String,
     replacement: String,
     case: bool,
+}
+
+/// A file open in a window that is not the active one. The active window's
+/// state lives directly in `Ide` (content, path, modified, undo, ...).
+#[derive(Default)]
+struct Buffer {
+    content: text_editor::Content,
+    path: Option<PathBuf>,
+    modified: bool,
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    live: Vec<lsp::Diagnostic>,
+    marks: Arc<Vec<Mark>>,
 }
 
 #[derive(Clone)]
@@ -509,6 +542,10 @@ enum Message {
     ReplaceAll,
     GoToLine,
     CloseSearch,
+    NextWindow,
+    PrevWindow,
+    CloseWindow,
+    SelectWindow(usize),
     ToggleBreakpoint,
     ClearBreakpoints,
     DebugStep(Step),
@@ -531,14 +568,25 @@ impl Ide {
         }
         ide.check_at_startup =
             platform::read_setting("check_dependencies").as_deref() != Some("false");
-        let file = std::env::args_os().skip(1).find(|a| !a.to_string_lossy().starts_with("--"));
-        if let Some(path) = file.map(PathBuf::from) {
+        // Each file on the command line opens in its own window.
+        let files: Vec<PathBuf> = std::env::args_os()
+            .skip(1)
+            .filter(|a| !a.to_string_lossy().starts_with("--"))
+            .map(PathBuf::from)
+            .collect();
+        for path in files {
             if path.exists() {
-                ide.load(&path);
+                ide.open_path(&path);
             } else {
+                if !ide.is_blank_window() {
+                    ide.open_window(Buffer::default());
+                }
                 ide.status = format!("New file {}", path.display());
                 ide.path = Some(path);
             }
+        }
+        if ide.window_count() > 1 {
+            let _ = ide.select_window(0);
         }
         let check = if ide.check_at_startup {
             Task::perform(platform::blocking(move || deps::check(os)), |list| Message::DepsChecked(list, true))
@@ -640,23 +688,13 @@ impl Ide {
             }
             Message::CloseMenu => Task::none(),
             Message::New => {
-                if self.needs_confirm(confirm, Discard::New) {
-                    return Task::none();
+                if !self.is_blank_window() {
+                    self.open_window(Buffer::default());
                 }
-                self.content = text_editor::Content::new();
-                self.path = None;
-                self.modified = false;
-                self.diagnostics.clear();
-                self.set_live(Vec::new());
-                self.completion = None;
                 self.status = "New file".into();
-                self.lsp_sync_doc();
-                Task::none()
+                iced::widget::operation::focus(EDITOR)
             }
             Message::Open => {
-                if self.needs_confirm(confirm, Discard::Open) {
-                    return Task::none();
-                }
                 Task::perform(
                     rfd::AsyncFileDialog::new()
                         .set_title("Open")
@@ -667,8 +705,21 @@ impl Ide {
                 )
             }
             Message::Opened(Some(path)) => {
-                self.load(&path);
-                Task::none()
+                self.open_path(&path);
+                iced::widget::operation::focus(EDITOR)
+            }
+            Message::NextWindow => self.select_window((self.active + 1) % self.window_count()),
+            Message::PrevWindow => {
+                let count = self.window_count();
+                self.select_window((self.active + count - 1) % count)
+            }
+            Message::SelectWindow(index) => self.select_window(index),
+            Message::CloseWindow => {
+                if self.needs_confirm(confirm, Discard::Close) {
+                    return Task::none();
+                }
+                self.close_window();
+                iced::widget::operation::focus(EDITOR)
             }
             Message::Opened(None) => Task::none(),
             Message::Save => self.save(AfterSave::Nothing),
@@ -1126,6 +1177,136 @@ impl Ide {
 
     // ----- Vim -----
 
+    // ----- Windows -----
+
+    fn window_count(&self) -> usize {
+        self.background.len() + 1
+    }
+
+    fn modified_windows(&self) -> usize {
+        usize::from(self.modified) + self.background.iter().filter(|b| b.modified).count()
+    }
+
+    /// Window names in order, with `*` for unsaved changes.
+    fn window_names(&self) -> Vec<String> {
+        let name = |path: &Option<PathBuf>, modified: bool| {
+            let file = path
+                .as_deref()
+                .and_then(Path::file_name)
+                .map_or("NONAME.RS".to_string(), |n| n.to_string_lossy().into_owned());
+            if modified { format!("{file}*") } else { file }
+        };
+        let mut names: Vec<String> = self.background.iter().map(|b| name(&b.path, b.modified)).collect();
+        names.insert(self.active, name(&self.path, self.modified));
+        names
+    }
+
+    /// An untitled, unchanged, empty window that a file can simply replace.
+    fn is_blank_window(&self) -> bool {
+        self.path.is_none() && !self.modified && self.content.text().trim().is_empty()
+    }
+
+    /// Moves the active window's state out of the editor fields.
+    fn take_active(&mut self) -> Buffer {
+        self.undo_group = false;
+        Buffer {
+            content: std::mem::take(&mut self.content),
+            path: self.path.take(),
+            modified: std::mem::take(&mut self.modified),
+            undo: std::mem::take(&mut self.undo),
+            redo: std::mem::take(&mut self.redo),
+            live: std::mem::take(&mut self.live),
+            marks: std::mem::take(&mut self.marks),
+        }
+    }
+
+    fn put_active(&mut self, buffer: Buffer) {
+        self.content = buffer.content;
+        self.path = buffer.path;
+        self.modified = buffer.modified;
+        self.undo = buffer.undo;
+        self.redo = buffer.redo;
+        self.live = buffer.live;
+        self.marks = buffer.marks;
+        self.completion = None;
+        self.message_index = None;
+        self.refresh_search_marks();
+        self.lsp_sync_doc();
+    }
+
+    /// Opens `buffer` in a new window right after the active one.
+    fn open_window(&mut self, buffer: Buffer) {
+        let current = self.take_active();
+        self.background.insert(self.active, current);
+        self.active += 1;
+        self.put_active(buffer);
+    }
+
+    fn select_window(&mut self, index: usize) -> Task<Message> {
+        if index != self.active && index < self.window_count() {
+            let current = self.take_active();
+            self.background.insert(self.active, current);
+            let target = self.background.remove(index);
+            self.active = index;
+            self.put_active(target);
+            let name = self.window_names()[index].clone();
+            self.status = format!("Window {}: {name}", index + 1);
+        }
+        iced::widget::operation::focus(EDITOR)
+    }
+
+    fn close_window(&mut self) {
+        if self.background.is_empty() {
+            // The last window becomes an empty one.
+            let _ = self.take_active();
+            self.put_active(Buffer::default());
+            self.status = "New file".into();
+            return;
+        }
+        let _closed = self.take_active();
+        self.active = self.active.min(self.background.len() - 1);
+        let next = self.background.remove(self.active);
+        self.put_active(next);
+        self.status = format!("Window closed; {} open", self.window_count());
+    }
+
+    /// Shows a file: switches to its window if it is open, otherwise opens
+    /// it (in the current window when that one is blank).
+    fn open_path(&mut self, path: &Path) -> bool {
+        if self.is_current_file(path) {
+            return true;
+        }
+        if let Some(index) = self.window_index_of(path) {
+            let _ = self.select_window(index);
+            return true;
+        }
+        let Ok(source) = std::fs::read_to_string(path) else {
+            self.status = format!("Cannot open {}", path.display());
+            return false;
+        };
+        if !self.is_blank_window() {
+            self.open_window(Buffer::default());
+        }
+        self.content = text_editor::Content::with_text(source.trim_start_matches('\u{feff}'));
+        self.path = Some(path.to_path_buf());
+        self.modified = false;
+        self.undo.clear();
+        self.redo.clear();
+        self.set_live(Vec::new());
+        self.lsp_sync_doc();
+        self.status = format!("Opened {}", path.display());
+        true
+    }
+
+    fn window_index_of(&self, path: &Path) -> Option<usize> {
+        let position = self
+            .background
+            .iter()
+            .position(|b| b.path.as_deref().is_some_and(|p| lsp::same_file(p, path)))?;
+        // Background order skips the active window.
+        Some(if position >= self.active { position + 1 } else { position })
+    }
+
     // ----- Debugger -----
 
     fn debug_command(&self, command: dap::Command) {
@@ -1236,12 +1417,9 @@ impl Ide {
                 };
                 if let Some(file) = &top.file
                     && !self.is_current_file(file)
+                    && !self.open_path(file)
                 {
-                    if self.modified {
-                        self.status = format!("Stopped in {} (save this file to follow)", file.display());
-                        return Task::none();
-                    }
-                    self.load(file);
+                    return Task::none();
                 }
                 let line = top.line.saturating_sub(1);
                 self.place_clamped(line, 0);
@@ -1309,6 +1487,28 @@ impl Ide {
         Arc::new(marks)
     }
 
+    /// One tab per open window; F6 / Alt+number switch between them.
+    fn window_tabs(&self) -> Element<'_, Message> {
+        let tabs = self.window_names().into_iter().enumerate().map(|(index, name)| {
+            let active = index == self.active;
+            button(text(format!(" {} {name} ", index + 1)).color(if active { Color::BLACK } else { TURBO_DARK_GRAY }))
+                .padding([1, 4])
+                .on_press(Message::SelectWindow(index))
+                .style(move |_, status| button::Style {
+                    background: Some(Background::Color(
+                        if active || matches!(status, button::Status::Hovered) { TURBO_CYAN } else { TURBO_GRAY },
+                    )),
+                    ..button::Style::default()
+                })
+                .into()
+        });
+        container(row(tabs).spacing(2))
+            .width(Length::Fill)
+            .padding([1, 4])
+            .style(|_| container::Style::default().background(TURBO_GRAY))
+            .into()
+    }
+
     /// Watches, locals and the call stack, shown while debugging.
     fn debug_panel(&self) -> Element<'_, Message> {
         let header = |title: &str| text(format!(" {title}")).color(Color::WHITE);
@@ -1366,7 +1566,7 @@ impl Ide {
 
     fn open_menu(&mut self, menu: Menu) -> Task<Message> {
         self.menu = Some(menu);
-        let items = menu_items(menu, self.vim.is_some());
+        let items = menu_items(menu, self.vim.is_some(), &self.window_names(), self.active);
         self.menu_item = items.iter().position(|i| i.message.is_some()).unwrap_or(0);
         // Arrow keys must reach the menu, not a text field.
         iced::widget::operation::focus(EDITOR)
@@ -1374,7 +1574,7 @@ impl Ide {
 
     fn pick_menu_item(&mut self, index: usize) -> Task<Message> {
         let Some(menu) = self.menu else { return Task::none() };
-        let message = menu_items(menu, self.vim.is_some()).into_iter().nth(index).and_then(|i| i.message);
+        let message = menu_items(menu, self.vim.is_some(), &self.window_names(), self.active).into_iter().nth(index).and_then(|i| i.message);
         self.menu = None;
         match message {
             Some(message) => self.update(message),
@@ -1414,7 +1614,7 @@ impl Ide {
     }
 
     fn menu_key(&mut self, menu: Menu, key: NavKey) -> Task<Message> {
-        let items = menu_items(menu, self.vim.is_some());
+        let items = menu_items(menu, self.vim.is_some(), &self.window_names(), self.active);
         let enabled: Vec<usize> = (0..items.len()).filter(|&i| items[i].message.is_some()).collect();
         let step = |by: isize| {
             let at = MENUS.len() as isize + menu.index() as isize + by;
@@ -1791,37 +1991,25 @@ impl Ide {
     /// Returns true (and asks) when unsaved edits would be lost and this is
     /// the first press of the command.
     fn needs_confirm(&mut self, previous: Option<Discard>, command: Discard) -> bool {
-        if !self.modified || previous == Some(command) {
+        let unsaved = match command {
+            Discard::Close => self.modified,
+            Discard::Exit => self.modified_windows() > 0,
+        };
+        if !unsaved || previous == Some(command) {
             return false;
         }
         let key = match command {
-            Discard::New => "File > New",
-            Discard::Open => "F3",
+            Discard::Close => "Alt+F3",
             Discard::Exit => "Alt+X",
         };
-        self.status = format!("Unsaved changes! Press F2 to save, or {key} again to discard.");
+        let what = if command == Discard::Exit && self.modified_windows() > 1 {
+            format!("{} windows have unsaved changes", self.modified_windows())
+        } else {
+            "Unsaved changes".to_string()
+        };
+        self.status = format!("{what}! Press F2 to save, or {key} again to discard.");
         self.confirm = Some(command);
         true
-    }
-
-    fn load(&mut self, path: &Path) -> bool {
-        match std::fs::read_to_string(path) {
-            Ok(source) => {
-                self.content = text_editor::Content::with_text(source.trim_start_matches('\u{feff}'));
-                self.path = Some(path.to_path_buf());
-                self.modified = false;
-                self.diagnostics.clear();
-                self.set_live(Vec::new());
-                self.completion = None;
-                self.status = format!("Opened {}", path.display());
-                self.lsp_sync_doc();
-                true
-            }
-            Err(e) => {
-                self.status = format!("Cannot open {}: {e}", path.display());
-                false
-            }
-        }
     }
 
     fn save(&mut self, after: AfterSave) -> Task<Message> {
@@ -1888,14 +2076,9 @@ impl Ide {
         }
         if let Some(file) = &diagnostic.file
             && !self.is_current_file(file)
+            && !self.open_path(file)
         {
-            if self.modified {
-                self.status = format!("Save first to open {}", file.display());
-                return;
-            }
-            if !self.load(file) {
-                return;
-            }
+            return;
         }
         // Diagnostics count characters; the editor counts bytes.
         let line = diagnostic.line - 1;
@@ -2172,6 +2355,9 @@ impl Ide {
 
         let panel = self.panel_items();
         let mut layout = column![menu_bar];
+        if self.window_count() > 1 {
+            layout = layout.push(self.window_tabs());
+        }
         if let Some(bar) = &self.search {
             layout = layout.push(self.search_bar(bar));
         }
@@ -2209,7 +2395,7 @@ impl Ide {
                     mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
                         .on_press(Message::CloseMenu),
                 )
-                .push(dropdown(menu, self.vim.is_some(), self.menu_item));
+                .push(dropdown(menu, self.vim.is_some(), self.menu_item, &self.window_names(), self.active));
         }
         layers.into()
     }
@@ -2513,7 +2699,10 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
         Key::Named(key::Named::F9) if modifiers.alt() => Some(Message::Compile),
         Key::Named(key::Named::F2) if modifiers.control() => Some(Message::OutputStop),
         Key::Named(key::Named::F2) => Some(Message::Save),
+        Key::Named(key::Named::F3) if modifiers.alt() => Some(Message::CloseWindow),
         Key::Named(key::Named::F3) => Some(Message::Open),
+        Key::Named(key::Named::F6) if modifiers.shift() => Some(Message::PrevWindow),
+        Key::Named(key::Named::F6) => Some(Message::NextWindow),
         Key::Named(key::Named::F5) if modifiers.alt() => Some(Message::OutputToggle),
         Key::Named(key::Named::F5) => Some(Message::Run),
         Key::Named(key::Named::F9) if modifiers.control() => Some(Message::Run),
@@ -2522,6 +2711,8 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
         _ => match key.to_latin(physical) {
             Some('x') if modifiers.alt() => Some(Message::Exit),
             Some('m') if modifiers.alt() => Some(Message::ToggleMatchCase),
+            Some('0') if modifiers.alt() => Some(Message::OpenMenu(Menu::Window)),
+            Some(c @ '1'..='9') if modifiers.alt() => Some(Message::SelectWindow(c as usize - '1' as usize)),
             Some(c) if modifiers.alt() && !modifiers.control() => Menu::from_hotkey(c).map(Message::OpenMenu),
             Some('s') if modifiers.command() => Some(Message::Save),
             Some('o') if modifiers.command() => Some(Message::Open),
@@ -2593,11 +2784,11 @@ fn save_as_dialog(after: AfterSave) -> Task<Message> {
     )
 }
 
-fn dropdown(menu: Menu, vim_on: bool, selected: usize) -> Element<'static, Message> {
-    let entries = menu_items(menu, vim_on).into_iter().enumerate().map(|(index, item)| {
+fn dropdown(menu: Menu, vim_on: bool, selected: usize, windows: &[String], active: usize) -> Element<'static, Message> {
+    let entries = menu_items(menu, vim_on, windows, active).into_iter().enumerate().map(|(index, item)| {
         let enabled = item.message.is_some();
         let label: Element<'static, Message> = if enabled {
-            hotkey_label(item.label, item.hotkey)
+            hotkey_label(&item.label, item.hotkey)
         } else {
             text(item.label).color(TURBO_DARK_GRAY).into()
         };
@@ -2628,19 +2819,19 @@ fn dropdown(menu: Menu, vim_on: bool, selected: usize) -> Element<'static, Messa
 }
 
 /// A label with its hotkey letter in red, Turbo Pascal style.
-fn hotkey_label(label: &'static str, hotkey: char) -> Element<'static, Message> {
+fn hotkey_label(label: &str, hotkey: char) -> Element<'static, Message> {
     let at = label.char_indices().find(|(_, c)| c.eq_ignore_ascii_case(&hotkey)).map(|(i, _)| i);
     match at {
         Some(i) => {
             let end = i + label[i..].chars().next().map_or(0, char::len_utf8);
             row![
-                text(&label[..i]).color(Color::BLACK),
-                text(&label[i..end]).color(TURBO_RED),
-                text(&label[end..]).color(Color::BLACK),
+                text(label[..i].to_string()).color(Color::BLACK),
+                text(label[i..end].to_string()).color(TURBO_RED),
+                text(label[end..].to_string()).color(Color::BLACK),
             ]
             .into()
         }
-        None => text(label).color(Color::BLACK).into(),
+        None => text(label.to_string()).color(Color::BLACK).into(),
     }
 }
 
@@ -2960,7 +3151,7 @@ mod debug_tests {
         let path = dir.join(name);
         std::fs::write(&path, text).unwrap();
         let mut ide = Ide::default();
-        ide.load(&path);
+        ide.open_path(&path);
         (ide, path)
     }
 
@@ -3044,5 +3235,104 @@ mod debug_tests {
         ide.debug = Some(DebugSession::default());
         send(&mut ide, [Message::Run]);
         assert!(!ide.building, "F5 continues the session instead of rebuilding");
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    fn files(names: &[&str]) -> Vec<PathBuf> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("window-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        names
+            .iter()
+            .map(|name| {
+                let path = dir.join(name);
+                std::fs::write(&path, format!("// {name}\n")).unwrap();
+                path
+            })
+            .collect()
+    }
+
+    fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
+        for message in messages {
+            let _ = ide.update(message);
+        }
+    }
+
+    #[test]
+    fn opening_files_makes_windows_and_reuses_a_blank_one() {
+        let paths = files(&["a.rs", "b.rs"]);
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::Opened(Some(paths[0].clone()))]);
+        assert_eq!(ide.window_count(), 1, "the blank window is reused");
+        send(&mut ide, [Message::Opened(Some(paths[1].clone()))]);
+        assert_eq!(ide.window_names(), ["a.rs", "b.rs"]);
+        assert_eq!(ide.active, 1);
+        send(&mut ide, [Message::Opened(Some(paths[0].clone()))]);
+        assert_eq!((ide.window_count(), ide.active), (2, 0), "an open file is switched to");
+        assert_eq!(ide.content.text(), "// a.rs\n");
+    }
+
+    #[test]
+    fn each_window_keeps_its_own_text_and_undo() {
+        let paths = files(&["c.rs", "d.rs"]);
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::Opened(Some(paths[0].clone())), Message::Opened(Some(paths[1].clone()))]);
+        send(&mut ide, [Message::Edit(Action::Edit(Edit::Insert('x')))]);
+        assert_eq!(ide.window_names(), ["c.rs", "d.rs*"]);
+        send(&mut ide, [Message::PrevWindow]);
+        assert_eq!(ide.content.text(), "// c.rs\n");
+        send(&mut ide, [Message::Undo]);
+        assert_eq!(ide.content.text(), "// c.rs\n", "nothing to undo in this window");
+        send(&mut ide, [Message::NextWindow, Message::Undo]);
+        assert_eq!(ide.content.text(), "// d.rs\n", "undo works in its own window");
+    }
+
+    #[test]
+    fn closing_asks_for_unsaved_changes() {
+        let paths = files(&["e.rs", "f.rs", "g.rs"]);
+        let mut ide = Ide::default();
+        for path in &paths {
+            send(&mut ide, [Message::Opened(Some(path.clone()))]);
+        }
+        send(&mut ide, [Message::SelectWindow(1), Message::Edit(Action::Edit(Edit::Insert('x')))]);
+        send(&mut ide, [Message::CloseWindow]);
+        assert_eq!(ide.window_count(), 3, "first Alt+F3 only warns");
+        send(&mut ide, [Message::CloseWindow]);
+        assert_eq!(ide.window_names(), ["e.rs", "g.rs"]);
+        assert_eq!(ide.path.as_deref(), Some(paths[2].as_path()), "the next window becomes active");
+        send(&mut ide, [Message::CloseWindow, Message::CloseWindow]);
+        assert_eq!(ide.window_names(), ["NONAME.RS"], "the last window turns into an empty one");
+    }
+
+    #[test]
+    fn exit_warns_about_background_windows() {
+        let paths = files(&["h.rs", "i.rs"]);
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::Opened(Some(paths[0].clone())), Message::Edit(Action::Edit(Edit::Insert('x')))]);
+        send(&mut ide, [Message::Opened(Some(paths[1].clone())), Message::Exit]);
+        assert!(ide.status.starts_with("Unsaved changes"), "{}", ide.status);
+        assert_eq!(ide.confirm, Some(Discard::Exit));
+    }
+
+    #[test]
+    fn window_keys_and_menu() {
+        let alt = Modifiers::ALT;
+        let physical = key::Physical::Unidentified(key::NativeCode::Unidentified);
+        let ch = |c: &str| Key::Character(c.into());
+        assert!(matches!(shortcut(&ch("2"), physical, alt), Some(Message::SelectWindow(1))));
+        assert!(matches!(shortcut(&ch("0"), physical, alt), Some(Message::OpenMenu(Menu::Window))));
+        let f = |n| Key::Named(n);
+        assert!(matches!(shortcut(&f(key::Named::F6), physical, Modifiers::empty()), Some(Message::NextWindow)));
+        assert!(matches!(shortcut(&f(key::Named::F6), physical, Modifiers::SHIFT), Some(Message::PrevWindow)));
+        assert!(matches!(shortcut(&f(key::Named::F3), physical, alt), Some(Message::CloseWindow)));
+
+        let paths = files(&["j.rs", "k.rs"]);
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::Opened(Some(paths[0].clone())), Message::Opened(Some(paths[1].clone()))]);
+        send(&mut ide, [Message::OpenMenu(Menu::Window), Message::Nav(NavKey::Char('1'))]);
+        assert_eq!(ide.active, 0, "digit hotkey picks a window from the list");
     }
 }

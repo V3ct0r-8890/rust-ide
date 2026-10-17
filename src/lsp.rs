@@ -330,15 +330,24 @@ impl Client {
 fn configuration(key: &ServerKey, params: &Value) -> Value {
     let items = params["items"].as_array().cloned().unwrap_or_default();
     let venv_python = venv_dir(&key.1).map(|venv| venv.join(PYTHON_EXE));
+    // "standard": real errors, without the strict mode's warnings about
+    // missing type annotations on every untyped function.
+    let analysis = json!({ "typeCheckingMode": "standard" });
     Value::Array(
         items
             .iter()
+            // basedpyright asks for "basedpyright" (analysis nested inside),
+            // pyright for "python" and "python.analysis": answer every form.
             .map(|item| match item["section"].as_str() {
-                Some(s) if s.ends_with(".analysis") => json!({ "typeCheckingMode": "standard" }),
-                Some("python") => match &venv_python {
-                    Some(python) => json!({ "pythonPath": python }),
-                    None => Value::Null,
-                },
+                Some(s) if s.ends_with(".analysis") => analysis.clone(),
+                Some("basedpyright") => json!({ "analysis": analysis }),
+                Some("python") => {
+                    let mut python = json!({ "analysis": analysis });
+                    if let Some(path) = &venv_python {
+                        python["pythonPath"] = json!(path);
+                    }
+                    python
+                }
                 _ => Value::Null,
             })
             .collect(),
