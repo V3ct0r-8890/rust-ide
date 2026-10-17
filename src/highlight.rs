@@ -24,13 +24,24 @@ impl Lang {
     }
 }
 
-/// A diagnostic range on one line, in character columns.
+/// A marked range on one line, in character columns: a live diagnostic or
+/// a search match.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mark {
     pub line: usize,
     pub start: usize,
     pub end: usize,
-    pub error: bool,
+    pub kind: MarkKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkKind {
+    Error,
+    Warning,
+    /// Every search match.
+    Match,
+    /// The current search match.
+    Current,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +60,8 @@ pub enum Highlight {
     Attribute,
     Error,
     Warning,
+    Match,
+    Current,
 }
 
 pub fn to_format(highlight: &Highlight, _theme: &Theme) -> Format<Font> {
@@ -61,7 +74,11 @@ pub fn to_format(highlight: &Highlight, _theme: &Theme) -> Format<Font> {
         Highlight::Attribute => Color::from_rgb(1.0, 0.75, 0.4),
         Highlight::Error => Color::from_rgb(1.0, 0.3, 0.3),
         Highlight::Warning => Color::from_rgb(1.0, 0.33, 1.0),
+        Highlight::Match => Color::from_rgb(1.0, 0.5, 0.0),
+        Highlight::Current => Color::WHITE,
     };
+    // Color only: a bold face can have a different width and would break
+    // the column alignment of the code.
     Format {
         color: Some(color),
         font: None,
@@ -149,7 +166,12 @@ fn apply_marks<'a>(
     for mark in marks {
         let start = byte_at(mark.start);
         let end = byte_at(mark.end.max(mark.start + 1)).max(start);
-        let highlight = if mark.error { Highlight::Error } else { Highlight::Warning };
+        let highlight = match mark.kind {
+            MarkKind::Error => Highlight::Error,
+            MarkKind::Warning => Highlight::Warning,
+            MarkKind::Match => Highlight::Match,
+            MarkKind::Current => Highlight::Current,
+        };
         styles[start..end].fill(Some(highlight));
     }
 
@@ -509,7 +531,7 @@ mod tests {
     fn marks_override_tokens() {
         let line = "let x = 1;";
         let (tokens, _) = lex_rust(line, State::Normal);
-        let mark = Mark { line: 0, start: 4, end: 5, error: true };
+        let mark = Mark { line: 0, start: 4, end: 5, kind: MarkKind::Error };
         let spans = apply_marks(line, tokens, [&mark].into_iter());
         assert!(spans.contains(&(4..5, Highlight::Error)));
         assert!(spans.contains(&(0..3, Highlight::Keyword)));

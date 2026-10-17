@@ -9,6 +9,7 @@ mod lsp;
 mod output;
 mod platform;
 mod runner;
+mod search;
 mod vim;
 
 use std::path::{Path, PathBuf};
@@ -23,7 +24,7 @@ use iced::widget::{
 };
 use iced::{Background, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
 
-use highlight::{Lang, Mark};
+use highlight::{Lang, Mark, MarkKind};
 use platform::Os;
 use runner::{BuildResult, Diagnostic, RunTarget};
 
@@ -45,6 +46,8 @@ const STATUS_BAR_HEIGHT: f32 = 24.0;
 const MESSAGES_HEIGHT: f32 = 140.0;
 const COMPLETION_ROWS: usize = 10;
 const OUTPUT_INPUT: &str = "output-input";
+const SEARCH_INPUT: &str = "search-input";
+const EDITOR: &str = "editor";
 
 const USAGE: &str = "\
 Usage: rust-ide [OPTIONS] [FILE]
@@ -103,6 +106,7 @@ fn main() -> iced::Result {
 enum Menu {
     File,
     Edit,
+    Search,
     Run,
     Compile,
     Options,
@@ -193,6 +197,27 @@ struct Ide {
     redo: Vec<Snapshot>,
     /// True while consecutive typing is being collected into one undo step.
     undo_group: bool,
+    /// The Find / Replace / Go to line bar, when open.
+    search: Option<SearchBar>,
+    /// The last searched text and case setting, for Search again (Ctrl+L).
+    last_query: String,
+    last_case: bool,
+    /// Highlights for the matches of the open search bar.
+    search_marks: Arc<Vec<Mark>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SearchMode {
+    Find,
+    Replace,
+    GoTo,
+}
+
+struct SearchBar {
+    mode: SearchMode,
+    query: String,
+    replacement: String,
+    case: bool,
 }
 
 #[derive(Clone)]
@@ -240,6 +265,16 @@ enum Message {
     Undo,
     Redo,
     ToggleVim,
+    OpenSearch(SearchMode),
+    SearchQuery(String),
+    SearchReplacement(String),
+    SearchCase(bool),
+    FindNext,
+    FindPrevious,
+    ReplaceOne,
+    ReplaceAll,
+    GoToLine,
+    CloseSearch,
 }
 
 impl Ide {
@@ -423,9 +458,50 @@ impl Ide {
                     self.deps = None;
                 } else if self.output.visible {
                     self.output.visible = false;
+                } else if self.search.is_some() {
+                    return self.close_search();
                 }
                 Task::none()
             }
+            Message::OpenSearch(mode) => self.open_search(mode),
+            Message::SearchQuery(query) => {
+                if let Some(bar) = &mut self.search {
+                    bar.query = query;
+                }
+                self.refresh_search_marks();
+                Task::none()
+            }
+            Message::SearchReplacement(replacement) => {
+                if let Some(bar) = &mut self.search {
+                    bar.replacement = replacement;
+                }
+                Task::none()
+            }
+            Message::SearchCase(case) => {
+                if let Some(bar) = &mut self.search {
+                    bar.case = case;
+                }
+                self.refresh_search_marks();
+                Task::none()
+            }
+            Message::FindNext => {
+                self.find(true);
+                Task::none()
+            }
+            Message::FindPrevious => {
+                self.find(false);
+                Task::none()
+            }
+            Message::ReplaceOne => {
+                self.replace_one();
+                Task::none()
+            }
+            Message::ReplaceAll => {
+                self.replace_all();
+                Task::none()
+            }
+            Message::GoToLine => self.go_to_line(),
+            Message::CloseSearch => self.close_search(),
             Message::Output(run_id, event) => {
                 if run_id == self.output.run_id {
                     self.output_event(event);
@@ -617,6 +693,9 @@ impl Ide {
             self.modified = true;
             self.diagnostics.clear();
             self.lsp_change();
+            if !self.search_marks.is_empty() {
+                self.refresh_search_marks();
+            }
         }
         if self.completion.is_some() {
             self.refresh_completion();
@@ -681,6 +760,239 @@ impl Ide {
     }
 
     // ----- Vim -----
+
+    // ----- Search -----
+
+    fn open_search(&mut self, mode: SearchMode) -> Task<Message> {
+        // Start from the selected text (one line only), else the last search.
+        let selected = self.content.selection().filter(|s| !s.contains('\n') && !s.is_empty());
+        let query = match mode {
+            SearchMode::GoTo => String::new(),
+            _ => selected.unwrap_or_else(|| self.last_query.clone()),
+        };
+        let replacement = self.search.as_ref().map(|b| b.replacement.clone()).unwrap_or_default();
+        self.search = Some(SearchBar { mode, query, replacement, case: self.last_case });
+        Task::batch([
+            iced::widget::operation::focus(SEARCH_INPUT),
+            iced::widget::operation::move_cursor_to_end(SEARCH_INPUT),
+        ])
+    }
+
+    fn close_search(&mut self) -> Task<Message> {
+        // Remember what was typed, so Search again (Ctrl+L) uses it.
+        if let Some(bar) = self.search.take()
+            && bar.mode != SearchMode::GoTo
+            && !bar.query.is_empty()
+        {
+            self.last_query = bar.query;
+            self.last_case = bar.case;
+        }
+        self.search_marks = Arc::default();
+        iced::widget::operation::focus(EDITOR)
+    }
+
+    /// The text to search for: the open bar's, or the last one (Ctrl+L).
+    fn search_query(&mut self) -> Option<(String, bool)> {
+        if let Some(bar) = &self.search
+            && bar.mode != SearchMode::GoTo
+        {
+            self.last_query = bar.query.clone();
+            self.last_case = bar.case;
+        }
+        if self.last_query.is_empty() {
+            self.status = "Nothing to search for (Ctrl+F)".into();
+            return None;
+        }
+        Some((self.last_query.clone(), self.last_case))
+    }
+
+    fn find(&mut self, forward: bool) {
+        let Some((query, case)) = self.search_query() else { return };
+        let text = self.content.text();
+        let cursor = self.content.cursor();
+        let here = search::offset_of(&text, cursor.position);
+        let other = cursor.selection.map_or(here, |s| search::offset_of(&text, s));
+        let found = if forward {
+            search::find(&text, &query, here.max(other), case)
+        } else {
+            search::find_back(&text, &query, here.min(other), case)
+        };
+        let Some((start, end, wrapped)) = found else {
+            self.status = format!("Search string not found: {query}");
+            return;
+        };
+        self.content.move_to(Cursor {
+            position: search::position_of(&text, end),
+            selection: Some(search::position_of(&text, start)),
+        });
+        let matches = search::all(&text, &query, case);
+        self.mark_matches(&text, &matches, Some(start));
+        let index = matches.iter().position(|&(s, _)| s == start).map_or(0, |i| i + 1);
+        let wrapped = if wrapped { " (wrapped)" } else { "" };
+        self.status = format!("Match {index} of {}{wrapped}", matches.len());
+    }
+
+    fn replace_one(&mut self) {
+        let Some((query, case)) = self.search_query() else { return };
+        let replacement = self.search.as_ref().map(|b| b.replacement.clone()).unwrap_or_default();
+        let selected = self.content.selection().unwrap_or_default();
+        if search::is_match(&selected, &query, case) {
+            self.push_undo();
+            self.undo_group = false;
+            self.content.perform(Action::Edit(Edit::Paste(Arc::new(replacement))));
+            self.modified = true;
+            self.diagnostics.clear();
+            self.lsp_change();
+        }
+        self.find(true);
+    }
+
+    fn replace_all(&mut self) {
+        let Some((query, case)) = self.search_query() else { return };
+        let replacement = self.search.as_ref().map(|b| b.replacement.clone()).unwrap_or_default();
+        let text = self.content.text();
+        let (new_text, count) = search::replace_all(&text, &query, &replacement, case);
+        if count == 0 {
+            self.status = format!("Search string not found: {query}");
+            return;
+        }
+        let position = self.content.cursor().position;
+        self.push_undo();
+        self.undo_group = false;
+        self.content = text_editor::Content::with_text(&new_text);
+        self.place_clamped(position.line, position.column);
+        self.modified = true;
+        self.diagnostics.clear();
+        self.lsp_change();
+        self.status = format!("Replaced {count} occurrence(s)");
+        self.refresh_search_marks();
+    }
+
+    /// Highlights `matches` (byte ranges); `current` is the selected one.
+    fn mark_matches(&mut self, text: &str, matches: &[(usize, usize)], current: Option<usize>) {
+        let column = |offset: usize| {
+            let p = search::position_of(text, offset);
+            let line_start = offset - p.column;
+            (p.line, text[line_start..offset].chars().count())
+        };
+        self.search_marks = Arc::new(
+            matches
+                .iter()
+                .map(|&(start, end)| {
+                    let (line, from) = column(start);
+                    let (_, to) = column(end);
+                    let kind = if Some(start) == current { MarkKind::Current } else { MarkKind::Match };
+                    Mark { line, start: from, end: to, kind }
+                })
+                .collect(),
+        );
+    }
+
+    /// Re-marks the open bar's matches after the text or query changed.
+    fn refresh_search_marks(&mut self) {
+        let Some(bar) = &self.search else { return };
+        if bar.mode == SearchMode::GoTo || bar.query.is_empty() {
+            self.search_marks = Arc::default();
+            return;
+        }
+        let (query, case) = (bar.query.clone(), bar.case);
+        let text = self.content.text();
+        let matches = search::all(&text, &query, case);
+        self.mark_matches(&text, &matches, None);
+    }
+
+    fn go_to_line(&mut self) -> Task<Message> {
+        let query = self.search.as_ref().map(|b| b.query.trim().to_string()).unwrap_or_default();
+        match query.parse::<usize>() {
+            Ok(line) if line >= 1 => {
+                self.place_clamped(line - 1, 0);
+                self.close_search()
+            }
+            _ => {
+                self.status = format!("Enter a line number from 1 to {}", self.content.line_count());
+                Task::none()
+            }
+        }
+    }
+
+    /// Moves the cursor, keeping the position inside the text.
+    fn place_clamped(&mut self, line: usize, column: usize) {
+        let line = line.min(self.content.line_count().saturating_sub(1));
+        let text = self.content.line(line).map(|l| l.text.into_owned()).unwrap_or_default();
+        let mut column = column.min(text.len());
+        while !text.is_char_boundary(column) {
+            column -= 1;
+        }
+        vim::place(&mut self.content, Position { line, column });
+    }
+
+    fn search_bar<'a>(&'a self, bar: &'a SearchBar) -> Element<'a, Message> {
+        let label = |s: &'static str| text(s).color(Color::BLACK);
+        let input = |value: &'a str, on_input: fn(String) -> Message, submit: Message, width: f32| {
+            text_input("", value)
+                .on_input(on_input)
+                .on_submit(submit)
+                .font(Font::MONOSPACE)
+                .width(width)
+                .padding([2, 6])
+        };
+
+        let close = small_button("Close", Some(Message::CloseSearch));
+        let rows: Element<'a, Message> = match bar.mode {
+            SearchMode::GoTo => row![
+                label(" Go to line:"),
+                input(&bar.query, Message::SearchQuery, Message::GoToLine, 100.0).id(SEARCH_INPUT),
+                small_button("Go", Some(Message::GoToLine)),
+                text(format!("(1-{})", self.content.line_count())).color(TURBO_DARK_GRAY),
+                Space::new().width(Length::Fill),
+                close,
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into(),
+            mode => {
+                let find = row![
+                    label(" Find:        "),
+                    input(&bar.query, Message::SearchQuery, Message::FindNext, 260.0).id(SEARCH_INPUT),
+                    checkbox(bar.case)
+                        .label("Case")
+                        .on_toggle(Message::SearchCase)
+                        .style(|theme, status| iced::widget::checkbox::Style {
+                            text_color: Some(Color::BLACK),
+                            ..iced::widget::checkbox::primary(theme, status)
+                        }),
+                    small_button("Next", Some(Message::FindNext)),
+                    small_button("Previous", Some(Message::FindPrevious)),
+                    Space::new().width(Length::Fill),
+                    close,
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+                if mode == SearchMode::Replace {
+                    let replace = row![
+                        label(" Replace with:"),
+                        input(&bar.replacement, Message::SearchReplacement, Message::ReplaceOne, 260.0),
+                        small_button("Replace", Some(Message::ReplaceOne)),
+                        small_button("Replace all", Some(Message::ReplaceAll)),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center);
+                    column![find, replace].spacing(4).into()
+                } else {
+                    find.into()
+                }
+            }
+        };
+
+        container(rows)
+            .padding([3, 6])
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                border: iced::Border::default().color(Color::BLACK).width(1),
+                ..container::Style::default().background(TURBO_GRAY)
+            })
+            .into()
+    }
 
     fn vim_key(&mut self, key: vim::Key) -> Task<Message> {
         let Some(vim) = &mut self.vim else { return Task::none() };
@@ -932,7 +1244,7 @@ impl Ide {
                     line: d.line,
                     start: d.start,
                     end: if d.end_line == d.line { d.end } else { usize::MAX / 2 },
-                    error: d.error,
+                    kind: if d.error { MarkKind::Error } else { MarkKind::Warning },
                 })
                 .collect(),
         );
@@ -1044,6 +1356,7 @@ impl Ide {
             let menu = match title {
                 "File" => Some(Menu::File),
                 "Edit" => Some(Menu::Edit),
+                "Search" => Some(Menu::Search),
                 "Run" => Some(Menu::Run),
                 "Compile" => Some(Menu::Compile),
                 "Options" => Some(Menu::Options),
@@ -1064,12 +1377,18 @@ impl Ide {
         let popup_open = self.completion.is_some();
         let vim_mode = self.vim.as_ref().map(|v| (v.mode, v.command.is_some()));
         let editor = text_editor(&self.content)
+            .id(EDITOR)
             .on_action(Message::Edit)
             .height(Length::Fill)
             .highlight_with::<highlight::Highlighter>(
                 highlight::Settings {
                     lang: Lang::from_path(self.path.as_deref()),
-                    marks: self.marks.clone(),
+                    marks: if self.search_marks.is_empty() {
+                        self.marks.clone()
+                    } else {
+                        // Search highlights are drawn over diagnostics.
+                        Arc::new(self.marks.iter().chain(self.search_marks.iter()).cloned().collect())
+                    },
                 },
                 highlight::to_format,
             )
@@ -1094,7 +1413,11 @@ impl Ide {
             });
 
         let panel = self.panel_items();
-        let mut layout = column![menu_bar, editor];
+        let mut layout = column![menu_bar];
+        if let Some(bar) = &self.search {
+            layout = layout.push(self.search_bar(bar));
+        }
+        layout = layout.push(editor);
         if !panel.is_empty() {
             layout = layout.push(self.messages_panel(panel));
         }
@@ -1407,6 +1730,10 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
             Some('z') if modifiers.command() && modifiers.shift() => Some(Message::Redo),
             Some('z') if modifiers.command() => Some(Message::Undo),
             Some('y') if modifiers.command() => Some(Message::Redo),
+            Some('f') if modifiers.command() => Some(Message::OpenSearch(SearchMode::Find)),
+            Some('h') if modifiers.command() => Some(Message::OpenSearch(SearchMode::Replace)),
+            Some('g') if modifiers.command() => Some(Message::OpenSearch(SearchMode::GoTo)),
+            Some('l') if modifiers.command() => Some(Message::FindNext),
             _ => None,
         },
     }
@@ -1476,6 +1803,15 @@ fn dropdown(menu: Menu, vim_on: bool) -> Element<'static, Message> {
     ];
     let (index, items): (usize, &[(&str, &str, Message)]) = match menu {
         Menu::Edit => (1, &[("Undo", "Ctrl+Z", Message::Undo), ("Redo", "Ctrl+Y", Message::Redo)]),
+        Menu::Search => (
+            2,
+            &[
+                ("Find...", "Ctrl+F", Message::OpenSearch(SearchMode::Find)),
+                ("Replace...", "Ctrl+H", Message::OpenSearch(SearchMode::Replace)),
+                ("Search again", "Ctrl+L", Message::FindNext),
+                ("Go to line number...", "Ctrl+G", Message::OpenSearch(SearchMode::GoTo)),
+            ],
+        ),
         Menu::File => (
             0,
             &[
@@ -1554,5 +1890,128 @@ fn menu_title_style(open: bool, status: button::Status) -> button::Style {
         background: highlighted.then(|| Background::Color(TURBO_GREEN)),
         text_color: Color::BLACK,
         ..button::Style::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ide(text: &str) -> Ide {
+        let mut ide = Ide::default();
+        ide.content = text_editor::Content::with_text(text);
+        ide
+    }
+
+    fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
+        for message in messages {
+            let _ = ide.update(message);
+        }
+    }
+
+    const TEXT: &str = "alpha beta\ngamma Alpha delta\nalpha omega\n";
+
+    #[test]
+    fn find_next_previous_and_case() {
+        let mut ide = ide(TEXT);
+        send(&mut ide, [
+            Message::OpenSearch(SearchMode::Find),
+            Message::SearchQuery("alpha".into()),
+            Message::FindNext,
+        ]);
+        assert_eq!(ide.content.selection().as_deref(), Some("alpha"));
+        assert_eq!(ide.status, "Match 1 of 3");
+        let kinds: Vec<_> = ide.search_marks.iter().map(|m| (m.line, m.start, m.end, m.kind)).collect();
+        assert_eq!(
+            kinds,
+            [(0, 0, 5, MarkKind::Current), (1, 6, 11, MarkKind::Match), (2, 0, 5, MarkKind::Match)]
+        );
+        send(&mut ide, [Message::FindNext]);
+        assert_eq!(ide.content.selection().as_deref(), Some("Alpha"));
+        assert_eq!(ide.content.cursor().position.line, 1);
+        send(&mut ide, [Message::FindPrevious]);
+        assert_eq!(ide.status, "Match 1 of 3");
+        send(&mut ide, [Message::SearchCase(true), Message::FindNext]);
+        assert_eq!(ide.content.cursor().position.line, 2, "case-sensitive skips 'Alpha'");
+        assert_eq!(ide.status, "Match 2 of 2");
+        send(&mut ide, [Message::FindNext]);
+        assert_eq!(ide.status, "Match 1 of 2 (wrapped)");
+    }
+
+    #[test]
+    fn search_again_without_the_bar() {
+        let mut ide = ide(TEXT);
+        send(&mut ide, [Message::FindNext]);
+        assert!(ide.status.starts_with("Nothing to search for"));
+        send(&mut ide, [
+            Message::OpenSearch(SearchMode::Find),
+            Message::SearchQuery("omega".into()),
+            Message::CloseSearch,
+            Message::FindNext,
+        ]);
+        assert_eq!(ide.content.selection().as_deref(), Some("omega"));
+    }
+
+    #[test]
+    fn replace_one_all_and_undo() {
+        let mut ide = ide(TEXT);
+        send(&mut ide, [
+            Message::OpenSearch(SearchMode::Replace),
+            Message::SearchQuery("alpha".into()),
+            Message::SearchReplacement("ONE".into()),
+            Message::FindNext,
+            Message::ReplaceOne,
+        ]);
+        assert_eq!(ide.content.text(), "ONE beta\ngamma Alpha delta\nalpha omega\n");
+        assert_eq!(ide.content.selection().as_deref(), Some("Alpha"), "moves to the next match");
+
+        send(&mut ide, [Message::SearchReplacement("x".into()), Message::ReplaceAll]);
+        assert_eq!(ide.content.text(), "ONE beta\ngamma x delta\nx omega\n");
+        assert_eq!(ide.status, "Replaced 2 occurrence(s)");
+        assert!(ide.modified);
+
+        send(&mut ide, [Message::Undo]);
+        assert_eq!(ide.content.text(), "ONE beta\ngamma Alpha delta\nalpha omega\n");
+        send(&mut ide, [Message::Undo]);
+        assert_eq!(ide.content.text(), TEXT);
+    }
+
+    #[test]
+    fn go_to_line_clamps_and_closes() {
+        let mut ide = ide(TEXT);
+        send(&mut ide, [
+            Message::OpenSearch(SearchMode::GoTo),
+            Message::SearchQuery("3".into()),
+            Message::GoToLine,
+        ]);
+        assert_eq!(ide.content.cursor().position, Position { line: 2, column: 0 });
+        assert!(ide.search.is_none());
+        send(&mut ide, [
+            Message::OpenSearch(SearchMode::GoTo),
+            Message::SearchQuery("999".into()),
+            Message::GoToLine,
+        ]);
+        assert_eq!(ide.content.cursor().position.line, 3, "clamped to the last line");
+        send(&mut ide, [
+            Message::OpenSearch(SearchMode::GoTo),
+            Message::SearchQuery("abc".into()),
+            Message::GoToLine,
+        ]);
+        assert!(ide.search.is_some(), "stays open on bad input");
+        assert!(ide.status.starts_with("Enter a line number"));
+    }
+
+    #[test]
+    fn find_prefills_from_selection_and_escape_closes() {
+        let mut ide = ide(TEXT);
+        ide.content.move_to(Cursor {
+            position: Position { line: 0, column: 10 },
+            selection: Some(Position { line: 0, column: 6 }),
+        });
+        send(&mut ide, [Message::OpenSearch(SearchMode::Find)]);
+        assert_eq!(ide.search.as_ref().map(|b| b.query.as_str()), Some("beta"));
+        send(&mut ide, [Message::Escape]);
+        assert!(ide.search.is_none());
+        assert!(ide.search_marks.is_empty(), "closing clears the highlights");
     }
 }

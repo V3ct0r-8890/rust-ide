@@ -35,6 +35,9 @@ Back-end engines (run invisibly by the IDE, never typed by the user):
 | Ctrl+F2 | Program reset: stop the running program |
 | Ctrl+Space | Code completion (also opens automatically after `.` and `::`) |
 | Ctrl+Z / Ctrl+Y | Undo / redo (Ctrl+Shift+Z also redoes) |
+| Ctrl+F / Ctrl+H | Find / Replace bar (all matches highlighted, "Match 2 of 7" in the status bar) |
+| Ctrl+L | Search again (Turbo Pascal's key), even with the bar closed |
+| Ctrl+G | Go to line number |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
 The Output window shows the program's output and has an input line for programs that read
@@ -74,9 +77,10 @@ To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging
 ## Status
 
 Done: editor, build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
-and completion, undo, basic Vim mode, Windows and Linux packages.
+and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
+Windows and Linux packages.
 
-Next: Search menu, debugger (F7/F8, breakpoints, Watch), several open files, TUI front end,
+Next: debugger (F7/F8, breakpoints, Watch), several open files, TUI front end,
 new-project templates (Simple / Low / Medium / Complex for Rust and Python).
 
 See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limitations.
