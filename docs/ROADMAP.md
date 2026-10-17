@@ -13,6 +13,7 @@ Last updated: 2026-10-17. Latest release: [v0.1.0](https://github.com/V3ct0r-889
 | Language servers | rust-analyzer and basedpyright/pyright: live errors in the editor and a live Messages panel, completion popup (Ctrl+Space, auto after `.` and `::`) |
 | Editing | Undo/redo (Ctrl+Z, Ctrl+Y); basic Vim mode (Options > Vim mode) |
 | Debugger | Debug menu with Turbo Pascal keys: Ctrl+F8 breakpoint, F7 trace into, F8 step over, Shift+F8 step out, F4 go to cursor, Shift+F5 debug run, Ctrl+F7 watch, Ctrl+F2 reset. Rust through `gdb -i dap` (gdb 14+), Python through debugpy. Breakpoints and the execution line are colored in the editor; the debug panel shows watches, arguments and locals, and the call stack |
+| Terminal version | `rust-ide-tui` (ratatui + crossterm): Turbo colors, block cursor, menus with hotkeys, F1 help, windows, find / search again / go to line, F9 compile with messages, F5 runs the program in the terminal (user screen, Alt+F5), open-file dialog. Shares the build runner, search and lexers with the GUI through the library crate |
 | Windows | Several open files: tabs under the menu bar, F6 / Shift+F6, Alt+1-9, Window menu (Alt+0) with the window list, Alt+F3 close; each window has its own text, undo and diagnostics; F3, error jumps and the debugger open files in windows; `rust-ide a.rs b.py` opens several files |
 | Keyboard | Everything reachable from the keyboard: F1 shortcut list, F10 / Alt+letter menus with arrow keys and red hotkey letters, Dependencies dialog keys, Alt+F8/Alt+F7 through messages, Tab/Shift+Tab indent; Turbo-style block cursor; the editor has focus at startup |
 | Search | Search menu: Find (Ctrl+F) with all matches highlighted and a match count, Replace / Replace all (Ctrl+H, undoable), Search again (Ctrl+L), Go to line (Ctrl+G) |
@@ -24,8 +25,9 @@ Last updated: 2026-10-17. Latest release: [v0.1.0](https://github.com/V3ct0r-889
 
 In suggested order.
 
-### 1. TUI front end
-- The same IDE in a terminal (ratatui), sharing the core with the GUI.
+### 1. Terminal version: the rest
+- Live errors and completion (language servers), the debugger, Replace and Vim mode in `rust-ide-tui`.
+- Mouse support (click to place the cursor, menus).
 
 ### 2. Vim mode, more commands
 - Line-wise Visual mode (`V`), repeat (`.`), text objects (`ciw`, `di(`), `f`/`t` motions, marks, block cursor.

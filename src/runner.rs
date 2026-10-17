@@ -35,7 +35,7 @@ pub struct Diagnostic {
     pub message: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RunTarget {
     pub program: PathBuf,
     pub args: Vec<String>,

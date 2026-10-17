@@ -7,6 +7,7 @@ repository = "https://github.com/V3ct0r-8890/rust-ide"
 
 [dependencies]
 iced = { version = "0.14.0", features = ["advanced"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 rfd = "0.17.2"
 serde_json = "1.0.154"
 

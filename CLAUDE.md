@@ -5,10 +5,17 @@ User-facing docs: `README.md`, `docs/INSTALL.md`.
 
 ## What this is
 
-A Turbo Pascal-style IDE for Rust and Python. GUI in iced 0.14 (TUI front end planned).
-Modules in `src/`: `main.rs` (UI, messages), `runner.rs` (build/check/run), `output.rs`
-(in-IDE program I/O), `lsp.rs` (LSP client), `highlight.rs`, `vim.rs`, `deps.rs`
-(dependency checker), `platform.rs` (OS differences, settings, tool lookup).
+A Turbo Pascal-style IDE for Rust and Python, with two front ends over one library crate:
+- Library (`src/lib.rs`): `runner.rs` (build/check/run), `output.rs` (in-IDE program I/O),
+  `lsp.rs` (LSP client), `dap.rs` (debugger), `highlight.rs`, `search.rs`, `vim.rs`,
+  `deps.rs` (dependency checker), `platform.rs` (OS differences, settings, tool lookup).
+- `rust-ide` (GUI, iced 0.14): `src/main.rs` (UI, messages) and `src/cursor.rs` (block cursor).
+- `rust-ide-tui` (terminal, ratatui + crossterm): `src/bin/rust-ide-tui/` (`buffer.rs` text
+  buffer, `app.rs` keys and state, `ui.rs` drawing, `main.rs` terminal loop and user screen).
+  Its UI is tested with ratatui's `TestBackend`. `RUST_IDE_TUI_KEYLOG=<file>` logs key events.
+  The agent shell sets `NO_COLOR=1`, which turns colors off; clear it to see colors. To see it
+  in a classic console window, start it through `conhost.exe` (Windows Terminal ignores
+  posted keys).
 
 ## Build and test
 

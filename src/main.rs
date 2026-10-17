@@ -4,15 +4,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cursor;
-mod dap;
-mod deps;
-mod highlight;
-mod lsp;
-mod output;
-mod platform;
-mod runner;
-mod search;
-mod vim;
+
+use rust_ide::{dap, deps, highlight, lsp, output, platform, runner, search, vim};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

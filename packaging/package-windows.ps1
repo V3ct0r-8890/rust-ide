@@ -18,6 +18,7 @@ $stage = "dist\$name"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force "$stage\docs" | Out-Null
 Copy-Item "$target\rust-ide.exe" $stage
+Copy-Item "$target\rust-ide-tui.exe" $stage
 Copy-Item README.md $stage
 Copy-Item docs\INSTALL.md "$stage\docs"
 Copy-Item packaging\windows\install-deps.ps1 $stage

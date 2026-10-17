@@ -25,7 +25,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: sh packaging/package-linux.sh
-      - run: dist/rust-ide-*/rust-ide --version
+      - run: dist/rust-ide-*/rust-ide --version && dist/rust-ide-*/rust-ide-tui --version
       - uses: actions/upload-artifact@v4
         with:
           name: linux-package
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: linux-package
-      - run: tar -xzf rust-ide-*.tar.gz && ./rust-ide-*/rust-ide --version
+      - run: tar -xzf rust-ide-*.tar.gz && ./rust-ide-*/rust-ide --version && ./rust-ide-*/rust-ide-tui --version
 
   windows:
     name: Windows package (GNU toolchain)

@@ -1,0 +1,786 @@
+//! State and keyboard handling of the terminal IDE. Work that needs the
+//! real terminal (building, running a program, the user screen) is returned
+//! as an [`Effect`] for the main loop to carry out.
+
+use std::path::{Path, PathBuf};
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use rust_ide::runner::{BuildResult, Diagnostic, RunTarget};
+use rust_ide::search;
+
+use crate::buffer::Buffer;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Menu {
+    File,
+    Edit,
+    Search,
+    Run,
+    Compile,
+    Window,
+    Help,
+}
+
+pub const MENUS: [Menu; 7] = [Menu::File, Menu::Edit, Menu::Search, Menu::Run, Menu::Compile, Menu::Window, Menu::Help];
+
+impl Menu {
+    pub fn title(self) -> &'static str {
+        match self {
+            Menu::File => "File",
+            Menu::Edit => "Edit",
+            Menu::Search => "Search",
+            Menu::Run => "Run",
+            Menu::Compile => "Compile",
+            Menu::Window => "Window",
+            Menu::Help => "Help",
+        }
+    }
+
+    fn index(self) -> usize {
+        MENUS.iter().position(|&m| m == self).unwrap_or(0)
+    }
+
+    fn from_hotkey(c: char) -> Option<Menu> {
+        MENUS.iter().copied().find(|m| m.title().starts_with(c.to_ascii_uppercase()))
+    }
+}
+
+/// Everything a key, a menu item or a prompt can ask for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    New,
+    Open,
+    Save,
+    SaveAs,
+    Exit,
+    Undo,
+    Redo,
+    Find,
+    FindNext,
+    GoToLine,
+    Run,
+    UserScreen,
+    Compile,
+    NextMessage,
+    PrevMessage,
+    NextWindow,
+    PrevWindow,
+    CloseWindow,
+    SelectWindow(usize),
+    Help,
+}
+
+pub struct MenuItem {
+    pub label: String,
+    pub hotkey: char,
+    pub keys: &'static str,
+    pub action: Action,
+}
+
+fn item(label: impl Into<String>, hotkey: char, keys: &'static str, action: Action) -> MenuItem {
+    MenuItem { label: label.into(), hotkey, keys, action }
+}
+
+/// What the main loop must do with the terminal.
+#[derive(Debug, PartialEq)]
+pub enum Effect {
+    None,
+    /// Build (and run afterwards when `run` is true); the status says "Compiling...".
+    Build { path: PathBuf, run: bool },
+    /// Run a built program in the terminal (Turbo Pascal's user screen).
+    Run(RunTarget),
+    /// Show the terminal's normal screen until a key is pressed.
+    UserScreen,
+    Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    SaveAs,
+    Find,
+    GoTo,
+}
+
+pub enum Mode {
+    Edit,
+    Menu { menu: Menu, item: usize },
+    Prompt { kind: PromptKind, input: String },
+    Open(OpenDialog),
+    Help { scroll: usize },
+}
+
+/// F3: a Turbo-style file list of one directory.
+pub struct OpenDialog {
+    pub dir: PathBuf,
+    pub entries: Vec<(String, bool)>,
+    pub selected: usize,
+    pub filter: String,
+}
+
+impl OpenDialog {
+    fn new(dir: PathBuf) -> Self {
+        let mut dialog = Self { dir, entries: Vec::new(), selected: 0, filter: String::new() };
+        dialog.read();
+        dialog
+    }
+
+    fn read(&mut self) {
+        let mut entries: Vec<(String, bool)> = std::fs::read_dir(&self.dir)
+            .map(|list| {
+                list.flatten()
+                    .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path().is_dir()))
+                    .filter(|(name, _)| !name.starts_with('.'))
+                    .collect()
+            })
+            .unwrap_or_default();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        if self.dir.parent().is_some() {
+            entries.insert(0, ("..".into(), true));
+        }
+        self.entries = entries;
+        self.selected = 0;
+    }
+
+    /// Entries matching the typed filter.
+    pub fn visible(&self) -> Vec<&(String, bool)> {
+        let filter = self.filter.to_lowercase();
+        self.entries.iter().filter(|(name, _)| name.to_lowercase().starts_with(&filter)).collect()
+    }
+}
+
+pub struct App {
+    pub windows: Vec<Buffer>,
+    pub active: usize,
+    pub mode: Mode,
+    pub status: String,
+    /// Results of the last build.
+    pub messages: Vec<Diagnostic>,
+    pub message_index: Option<usize>,
+    pub last_query: String,
+    /// A pending "press again to discard" for this action.
+    confirm: Option<Action>,
+    /// Program shown on the user screen (for its title).
+    pub last_run: Option<String>,
+}
+
+impl App {
+    pub fn new(files: &[PathBuf]) -> Self {
+        let mut app = Self {
+            windows: vec![Buffer::default()],
+            active: 0,
+            mode: Mode::Edit,
+            status: "F1 Help  F10 Menu".into(),
+            messages: Vec::new(),
+            message_index: None,
+            last_query: String::new(),
+            confirm: None,
+            last_run: None,
+        };
+        for file in files {
+            if file.exists() {
+                app.open(file);
+            } else {
+                app.new_window();
+                app.buffer_mut().path = Some(file.clone());
+                app.status = format!("New file {}", file.display());
+            }
+        }
+        app.active = 0;
+        app
+    }
+
+    pub fn buffer(&self) -> &Buffer {
+        &self.windows[self.active]
+    }
+
+    pub fn buffer_mut(&mut self) -> &mut Buffer {
+        &mut self.windows[self.active]
+    }
+
+    pub fn menu_items(&self, menu: Menu) -> Vec<MenuItem> {
+        match menu {
+            Menu::File => vec![
+                item("New", 'n', "", Action::New),
+                item("Open...", 'o', "F3", Action::Open),
+                item("Save", 's', "F2", Action::Save),
+                item("Save as...", 'a', "", Action::SaveAs),
+                item("Exit", 'x', "Alt+X", Action::Exit),
+            ],
+            Menu::Edit => vec![item("Undo", 'u', "Ctrl+Z", Action::Undo), item("Redo", 'r', "Ctrl+Y", Action::Redo)],
+            Menu::Search => vec![
+                item("Find...", 'f', "Ctrl+F", Action::Find),
+                item("Search again", 's', "Ctrl+L", Action::FindNext),
+                item("Go to line number...", 'g', "Ctrl+G", Action::GoToLine),
+            ],
+            Menu::Run => vec![item("Run", 'r', "F5", Action::Run), item("User screen", 'u', "Alt+F5", Action::UserScreen)],
+            Menu::Compile => vec![
+                item("Compile", 'c', "F9", Action::Compile),
+                item("Next message", 'n', "Alt+F8", Action::NextMessage),
+                item("Previous message", 'p', "Alt+F7", Action::PrevMessage),
+            ],
+            Menu::Window => {
+                let mut items = vec![
+                    item("Next", 'n', "F6", Action::NextWindow),
+                    item("Previous", 'p', "Shift+F6", Action::PrevWindow),
+                    item("Close", 'c', "Alt+F3", Action::CloseWindow),
+                ];
+                for (index, window) in self.windows.iter().enumerate().take(9) {
+                    let mark = if index == self.active { '>' } else { ' ' };
+                    let star = if window.modified { "*" } else { "" };
+                    let hotkey = char::from_digit(index as u32 + 1, 10).unwrap_or(' ');
+                    items.push(item(format!("{}{mark}{}{star}", index + 1, window.name()), hotkey, "", Action::SelectWindow(index)));
+                }
+                items
+            }
+            Menu::Help => vec![item("Keyboard shortcuts", 'k', "F1", Action::Help)],
+        }
+    }
+
+    // ----- Keys -----
+
+    pub fn key(&mut self, key: KeyEvent) -> Effect {
+        // Global keys work in every mode.
+        if let Some(action) = global_key(&key) {
+            self.mode = Mode::Edit;
+            return self.act(action);
+        }
+        match &mut self.mode {
+            Mode::Edit => self.edit_key(key),
+            Mode::Menu { .. } => self.menu_key(key),
+            Mode::Prompt { .. } => self.prompt_key(key),
+            Mode::Open(_) => self.open_key(key),
+            Mode::Help { scroll } => {
+                match key.code {
+                    KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                    KeyCode::Down => *scroll += 1,
+                    KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                    KeyCode::PageDown => *scroll += 10,
+                    KeyCode::Esc | KeyCode::Enter => self.mode = Mode::Edit,
+                    _ => {}
+                }
+                Effect::None
+            }
+        }
+    }
+
+    fn edit_key(&mut self, key: KeyEvent) -> Effect {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        if !matches!(key.code, KeyCode::F(_)) {
+            self.confirm = None;
+        }
+        let b = self.buffer_mut();
+        match key.code {
+            KeyCode::Char(c) if !ctrl && !alt || ctrl && alt => b.insert_char(c),
+            KeyCode::Enter => b.newline(),
+            KeyCode::Backspace => b.backspace(),
+            KeyCode::Delete => b.delete(),
+            KeyCode::Tab => b.indent(),
+            KeyCode::BackTab => b.unindent(),
+            KeyCode::Left if ctrl => b.word_left(),
+            KeyCode::Right if ctrl => b.word_right(),
+            KeyCode::Left => b.left(),
+            KeyCode::Right => b.right(),
+            KeyCode::Up => b.vertical(-1),
+            KeyCode::Down => b.vertical(1),
+            KeyCode::PageUp => b.vertical(-20),
+            KeyCode::PageDown => b.vertical(20),
+            KeyCode::Home if ctrl => b.document_start(),
+            KeyCode::End if ctrl => b.document_end(),
+            KeyCode::Home => b.home(),
+            KeyCode::End => b.end(),
+            _ => {}
+        }
+        Effect::None
+    }
+
+    fn menu_key(&mut self, key: KeyEvent) -> Effect {
+        let Mode::Menu { menu, item } = self.mode else { return Effect::None };
+        let items = self.menu_items(menu);
+        let step = |by: isize| MENUS[((MENUS.len() as isize + menu.index() as isize + by) as usize) % MENUS.len()];
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Edit,
+            KeyCode::Left => self.mode = Mode::Menu { menu: step(-1), item: 0 },
+            KeyCode::Right => self.mode = Mode::Menu { menu: step(1), item: 0 },
+            KeyCode::Up => self.mode = Mode::Menu { menu, item: (item + items.len() - 1) % items.len() },
+            KeyCode::Down => self.mode = Mode::Menu { menu, item: (item + 1) % items.len() },
+            KeyCode::Enter => {
+                self.mode = Mode::Edit;
+                return self.act(items[item].action.clone());
+            }
+            KeyCode::Char(c) => {
+                if let Some(chosen) = items.iter().find(|i| i.hotkey == c.to_ascii_lowercase()) {
+                    self.mode = Mode::Edit;
+                    return self.act(chosen.action.clone());
+                }
+            }
+            _ => {}
+        }
+        Effect::None
+    }
+
+    fn prompt_key(&mut self, key: KeyEvent) -> Effect {
+        let Mode::Prompt { kind, input } = &mut self.mode else { return Effect::None };
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Edit,
+            KeyCode::Backspace => {
+                input.pop();
+            }
+            KeyCode::Char(c) => input.push(c),
+            KeyCode::Enter => {
+                let (kind, input) = (*kind, input.clone());
+                self.mode = Mode::Edit;
+                return self.submit(kind, &input);
+            }
+            _ => {}
+        }
+        Effect::None
+    }
+
+    fn open_key(&mut self, key: KeyEvent) -> Effect {
+        let Mode::Open(dialog) = &mut self.mode else { return Effect::None };
+        let count = dialog.visible().len();
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Edit,
+            KeyCode::Up if count > 0 => dialog.selected = (dialog.selected + count - 1) % count,
+            KeyCode::Down if count > 0 => dialog.selected = (dialog.selected + 1) % count,
+            KeyCode::Char(c) => {
+                dialog.filter.push(c);
+                dialog.selected = 0;
+            }
+            KeyCode::Backspace => {
+                if dialog.filter.pop().is_none()
+                    && let Some(parent) = dialog.dir.parent()
+                {
+                    dialog.dir = parent.to_path_buf();
+                    dialog.read();
+                }
+                dialog.selected = 0;
+            }
+            KeyCode::Enter => {
+                let Some((name, is_dir)) = dialog.visible().get(dialog.selected).map(|e| (e.0.clone(), e.1)) else {
+                    return Effect::None;
+                };
+                let path = if name == ".." {
+                    dialog.dir.parent().map(Path::to_path_buf).unwrap_or_else(|| dialog.dir.clone())
+                } else {
+                    dialog.dir.join(&name)
+                };
+                if is_dir {
+                    dialog.dir = path;
+                    dialog.filter.clear();
+                    dialog.read();
+                } else {
+                    self.mode = Mode::Edit;
+                    self.open(&path);
+                }
+            }
+            _ => {}
+        }
+        Effect::None
+    }
+
+    // ----- Actions -----
+
+    pub fn act(&mut self, action: Action) -> Effect {
+        let confirmed = self.confirm.take() == Some(action.clone());
+        match action {
+            Action::New => {
+                if !self.buffer().is_blank() {
+                    self.new_window();
+                }
+                self.status = "New file".into();
+            }
+            Action::Open => {
+                let dir = self
+                    .buffer()
+                    .path
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                self.mode = Mode::Open(OpenDialog::new(dir));
+            }
+            Action::Save => self.save(),
+            Action::SaveAs => {
+                let input = self.buffer().path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+                self.mode = Mode::Prompt { kind: PromptKind::SaveAs, input };
+            }
+            Action::Exit => {
+                let unsaved = self.windows.iter().filter(|w| w.modified).count();
+                if unsaved == 0 || confirmed {
+                    return Effect::Quit;
+                }
+                self.status = format!("{unsaved} window(s) have unsaved changes! F2 saves, Alt+X again quits.");
+                self.confirm = Some(Action::Exit);
+            }
+            Action::Undo => {
+                if !self.buffer_mut().undo() {
+                    self.status = "Nothing to undo".into();
+                }
+            }
+            Action::Redo => {
+                if !self.buffer_mut().redo() {
+                    self.status = "Nothing to redo".into();
+                }
+            }
+            Action::Find => self.mode = Mode::Prompt { kind: PromptKind::Find, input: self.last_query.clone() },
+            Action::FindNext => self.find_next(),
+            Action::GoToLine => self.mode = Mode::Prompt { kind: PromptKind::GoTo, input: String::new() },
+            Action::Run | Action::Compile => {
+                let run = action == Action::Run;
+                if self.buffer().path.is_none() {
+                    self.status = "Save the file first (F2)".into();
+                    return Effect::None;
+                }
+                self.save();
+                if self.buffer().modified {
+                    return Effect::None; // saving failed
+                }
+                self.status = "Compiling...".into();
+                return Effect::Build { path: self.buffer().path.clone().unwrap_or_default(), run };
+            }
+            Action::UserScreen => return Effect::UserScreen,
+            Action::NextMessage => self.step_message(true),
+            Action::PrevMessage => self.step_message(false),
+            Action::NextWindow => self.select((self.active + 1) % self.windows.len()),
+            Action::PrevWindow => self.select((self.active + self.windows.len() - 1) % self.windows.len()),
+            Action::SelectWindow(index) => self.select(index),
+            Action::CloseWindow => {
+                if self.buffer().modified && !confirmed {
+                    self.status = "Unsaved changes! F2 saves, Alt+F3 again closes.".into();
+                    self.confirm = Some(Action::CloseWindow);
+                } else {
+                    self.close_window();
+                }
+            }
+            Action::Help => self.mode = Mode::Help { scroll: 0 },
+        }
+        Effect::None
+    }
+
+    fn submit(&mut self, kind: PromptKind, input: &str) -> Effect {
+        match kind {
+            PromptKind::SaveAs => {
+                if !input.trim().is_empty() {
+                    self.buffer_mut().path = Some(PathBuf::from(input.trim()));
+                    self.save();
+                }
+            }
+            PromptKind::Find => {
+                self.last_query = input.to_string();
+                self.find_next();
+            }
+            PromptKind::GoTo => match input.trim().parse::<usize>() {
+                Ok(line) if line >= 1 => self.buffer_mut().go_to(line - 1, 0),
+                _ => self.status = "Not a line number".into(),
+            },
+        }
+        Effect::None
+    }
+
+    pub fn save(&mut self) {
+        if self.buffer().path.is_none() {
+            self.mode = Mode::Prompt { kind: PromptKind::SaveAs, input: String::new() };
+            return;
+        }
+        self.status = match self.buffer_mut().save() {
+            Ok(()) => format!("Saved {}", self.buffer().name()),
+            Err(e) => format!("Cannot save: {e}"),
+        };
+    }
+
+    fn find_next(&mut self) {
+        if self.last_query.is_empty() {
+            self.status = "Nothing to search for (Ctrl+F)".into();
+            return;
+        }
+        let text = self.buffer().text();
+        let from = self.buffer().offset() + 1;
+        match search::find(&text, &self.last_query, from.min(text.len()), false) {
+            Some((start, _, wrapped)) => {
+                self.buffer_mut().go_to_offset(start);
+                let count = search::all(&text, &self.last_query, false).len();
+                self.status = format!("Found \"{}\" ({count} in file){}", self.last_query, if wrapped { ", wrapped" } else { "" });
+            }
+            None => self.status = format!("Search string not found: {}", self.last_query),
+        }
+    }
+
+    // ----- Windows -----
+
+    fn new_window(&mut self) {
+        self.windows.insert(self.active + 1, Buffer::default());
+        self.active += 1;
+    }
+
+    pub fn open(&mut self, path: &Path) {
+        let same = |p: &Path| rust_ide::lsp::same_file(p, path);
+        if let Some(index) = self.windows.iter().position(|w| w.path.as_deref().is_some_and(same)) {
+            self.select(index);
+            return;
+        }
+        match Buffer::open(path) {
+            Ok(buffer) => {
+                if self.buffer().is_blank() {
+                    self.windows[self.active] = buffer;
+                } else {
+                    self.windows.insert(self.active + 1, buffer);
+                    self.active += 1;
+                }
+                self.status = format!("Opened {}", path.display());
+            }
+            Err(e) => self.status = format!("Cannot open {}: {e}", path.display()),
+        }
+    }
+
+    fn select(&mut self, index: usize) {
+        if index < self.windows.len() {
+            self.active = index;
+            self.status = format!("Window {}: {}", index + 1, self.buffer().name());
+        }
+    }
+
+    fn close_window(&mut self) {
+        if self.windows.len() == 1 {
+            self.windows[0] = Buffer::default();
+        } else {
+            self.windows.remove(self.active);
+            self.active = self.active.min(self.windows.len() - 1);
+        }
+        self.status = format!("{} window(s) open", self.windows.len());
+    }
+
+    // ----- Build results -----
+
+    /// Called by the main loop when a build finishes.
+    pub fn build_finished(&mut self, result: BuildResult, run: bool) -> Effect {
+        self.messages = result.diagnostics;
+        self.message_index = None;
+        let errors = self.messages.iter().filter(|d| d.level == "error").count();
+        let warnings = self.messages.len() - errors;
+        if !result.success {
+            self.status = format!("Compile failed: {errors} error(s), {warnings} warning(s)");
+            self.step_message(true);
+            return Effect::None;
+        }
+        self.status = format!("Compile successful, {warnings} warning(s)");
+        match result.target {
+            Some(target) if run => {
+                self.last_run = Some(self.buffer().name());
+                Effect::Run(target)
+            }
+            _ => Effect::None,
+        }
+    }
+
+    fn step_message(&mut self, forward: bool) {
+        if self.messages.is_empty() {
+            self.status = "No messages".into();
+            return;
+        }
+        let count = self.messages.len();
+        let index = match self.message_index {
+            Some(i) if forward => (i + 1) % count,
+            Some(i) => (i + count - 1) % count,
+            None if forward => 0,
+            None => count - 1,
+        };
+        self.message_index = Some(index);
+        let message = self.messages[index].clone();
+        if let Some(file) = &message.file {
+            self.open(file);
+        }
+        if message.line > 0 {
+            self.buffer_mut().go_to(message.line - 1, message.column.saturating_sub(1));
+        }
+        self.status = format!("{} {}/{}: {}", message.level.to_uppercase(), index + 1, count, message.message);
+    }
+}
+
+/// Keys that work everywhere, Turbo Pascal style.
+fn global_key(key: &KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    Some(match key.code {
+        KeyCode::F(1) => Action::Help,
+        KeyCode::F(2) => Action::Save,
+        KeyCode::F(3) if alt => Action::CloseWindow,
+        KeyCode::F(3) => Action::Open,
+        KeyCode::F(5) if alt => Action::UserScreen,
+        KeyCode::F(5) => Action::Run,
+        KeyCode::F(6) if shift => Action::PrevWindow,
+        KeyCode::F(6) => Action::NextWindow,
+        KeyCode::F(7) if alt => Action::PrevMessage,
+        KeyCode::F(8) if alt => Action::NextMessage,
+        KeyCode::F(9) if ctrl => Action::Run,
+        KeyCode::F(9) => Action::Compile,
+        KeyCode::Char(c) if ctrl && !alt => match c.to_ascii_lowercase() {
+            's' => Action::Save,
+            'o' => Action::Open,
+            'z' => Action::Undo,
+            'y' => Action::Redo,
+            'f' => Action::Find,
+            'l' => Action::FindNext,
+            'g' => Action::GoToLine,
+            'q' => Action::Exit,
+            _ => return None,
+        },
+        KeyCode::Char(c) if alt && !ctrl => match c.to_ascii_lowercase() {
+            'x' => Action::Exit,
+            d @ '1'..='9' => Action::SelectWindow(d as usize - '1' as usize),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+/// F10 and Alt+letter open menus (handled before global keys).
+pub fn menu_key(key: &KeyEvent) -> Option<Menu> {
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::F(10) => Some(Menu::File),
+        KeyCode::Char('0') if alt => Some(Menu::Window),
+        KeyCode::Char(c) if alt && c != 'x' && !c.is_ascii_digit() => Menu::from_hotkey(c),
+        _ => None,
+    }
+}
+
+impl App {
+    /// Entry point for every key: menus first, then everything else.
+    pub fn handle(&mut self, key: KeyEvent) -> Effect {
+        if let Some(menu) = menu_key(&key) {
+            self.mode = Mode::Menu { menu, item: 0 };
+            return Effect::None;
+        }
+        self.key(key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn with(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    fn typed(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.handle(if c == '\n' { key(KeyCode::Enter) } else { key(KeyCode::Char(c)) });
+        }
+    }
+
+    fn temp_files(names: &[&str]) -> Vec<PathBuf> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tui-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        names
+            .iter()
+            .map(|n| {
+                let p = dir.join(n);
+                std::fs::write(&p, format!("// {n}\nfn main() {{}}\n")).unwrap();
+                p
+            })
+            .collect()
+    }
+
+    #[test]
+    fn menus_with_keys() {
+        let mut app = App::new(&[]);
+        app.handle(with(KeyCode::Char('s'), KeyModifiers::ALT));
+        assert!(matches!(app.mode, Mode::Menu { menu: Menu::Search, item: 0 }));
+        app.handle(key(KeyCode::Down));
+        app.handle(key(KeyCode::Down));
+        app.handle(key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Prompt { kind: PromptKind::GoTo, .. }));
+        app.handle(key(KeyCode::Esc));
+        app.handle(key(KeyCode::F(10)));
+        app.handle(key(KeyCode::Left));
+        assert!(matches!(app.mode, Mode::Menu { menu: Menu::Help, .. }), "Left wraps from File to Help");
+        app.handle(key(KeyCode::Char('k')));
+        assert!(matches!(app.mode, Mode::Help { .. }), "hotkey letter runs the item");
+    }
+
+    #[test]
+    fn find_and_go_to_line() {
+        let mut app = App::new(&[]);
+        typed(&mut app, "alpha\nbeta alpha\ngamma");
+        app.handle(with(KeyCode::Home, KeyModifiers::CONTROL));
+        app.handle(with(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        typed(&mut app, "alpha\n");
+        assert_eq!((app.buffer().row, app.buffer().char_col()), (1, 5));
+        app.handle(with(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        assert_eq!((app.buffer().row, app.buffer().char_col()), (0, 0), "wraps around");
+        app.handle(with(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        typed(&mut app, "3\n");
+        assert_eq!(app.buffer().row, 2);
+    }
+
+    #[test]
+    fn windows_open_switch_and_close() {
+        let files = temp_files(&["w1.rs", "w2.rs"]);
+        let mut app = App::new(&files);
+        assert_eq!(app.windows.len(), 2);
+        assert_eq!(app.active, 0);
+        app.handle(key(KeyCode::F(6)));
+        assert_eq!(app.active, 1);
+        typed(&mut app, "x");
+        app.handle(with(KeyCode::F(3), KeyModifiers::ALT));
+        assert_eq!(app.windows.len(), 2, "unsaved: the first Alt+F3 warns");
+        app.handle(with(KeyCode::F(3), KeyModifiers::ALT));
+        assert_eq!(app.windows.len(), 1);
+        app.open(&files[0]);
+        assert_eq!(app.windows.len(), 1, "an open file is not opened twice");
+    }
+
+    #[test]
+    fn exit_asks_twice_with_unsaved_changes() {
+        let mut app = App::new(&[]);
+        typed(&mut app, "x");
+        assert_eq!(app.handle(with(KeyCode::Char('x'), KeyModifiers::ALT)), Effect::None);
+        assert_eq!(app.handle(with(KeyCode::Char('x'), KeyModifiers::ALT)), Effect::Quit);
+    }
+
+    #[test]
+    fn compile_needs_a_file_and_reports_errors() {
+        let mut app = App::new(&[]);
+        assert_eq!(app.handle(key(KeyCode::F(9))), Effect::None);
+        assert!(matches!(app.mode, Mode::Prompt { kind: PromptKind::SaveAs, .. }) || app.status.contains("Save"));
+
+        let files = temp_files(&["broken.rs"]);
+        let mut app = App::new(&files);
+        let effect = app.handle(key(KeyCode::F(9)));
+        assert_eq!(effect, Effect::Build { path: files[0].clone(), run: false });
+        let result = BuildResult {
+            success: false,
+            diagnostics: vec![Diagnostic {
+                file: Some(files[0].clone()),
+                line: 2,
+                column: 4,
+                level: "error".into(),
+                message: "oops".into(),
+            }],
+            target: None,
+        };
+        assert_eq!(app.build_finished(result, false), Effect::None);
+        assert_eq!((app.buffer().row, app.buffer().char_col()), (1, 3), "jumps to the first error");
+        assert!(app.status.starts_with("ERROR 1/1"));
+    }
+
+    #[test]
+    fn open_dialog_lists_and_filters() {
+        let files = temp_files(&["pick_me.rs", "other.py"]);
+        let mut app = App::new(&[]);
+        app.mode = Mode::Open(OpenDialog::new(files[0].parent().unwrap().to_path_buf()));
+        typed(&mut app, "pick");
+        let Mode::Open(dialog) = &app.mode else { panic!() };
+        assert_eq!(dialog.visible().len(), 1);
+        app.handle(key(KeyCode::Enter));
+        assert_eq!(app.buffer().name(), "pick_me.rs");
+    }
+}

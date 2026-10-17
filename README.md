@@ -61,6 +61,22 @@ from the keyboard. *Run > Run in external terminal* opens a separate terminal in
 Click a line in the Messages panel to jump to that error. While you type, the language server's
 errors are shown live: red/magenta text in the editor, the "Messages (live)" panel, and the status bar. `rust-ide a.rs b.py` opens files at startup, each in its own window.
 
+## Terminal version
+
+`rust-ide-tui` is the same IDE in a terminal (Windows Terminal, conhost, GNOME Terminal,
+Konsole, xterm, SSH sessions): Turbo Pascal colors, block cursor, F10 / Alt+letter menus,
+F1 help, several windows (F6, Alt+1-9), Ctrl+F / Ctrl+L / Ctrl+G, F9 compile with a
+Messages panel (Alt+F8 / Alt+F7), and **F5 runs the program right in the terminal**,
+like Turbo Pascal's user screen (Alt+F5 shows it again).
+
+```
+rust-ide-tui hello.rs main.py
+```
+
+Not in the terminal version yet: live errors and completion (language servers), the
+debugger, Replace, and Vim mode. Set `NO_COLOR` and it shows no colors, as terminal
+programs should.
+
 ## Vim mode
 
 Turn it on in **Options > Vim mode** (remembered between sessions). The status bar shows
@@ -91,11 +107,11 @@ To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging
 
 ## Status
 
-Done: several open files (tabs, F6, Window menu), debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
+Done: terminal version `rust-ide-tui`, several open files (tabs, F6, Window menu), debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
 and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
 Windows and Linux packages.
 
-Next: TUI front end,
+Next: language servers and debugger in the terminal version,
 new-project templates (Simple / Low / Medium / Complex for Rust and Python).
 
 See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limitations.

@@ -155,6 +155,30 @@ impl highlighter::Highlighter for Highlighter {
     }
 }
 
+/// Highlights lines one after another, keeping multi-line state (block
+/// comments, triple-quoted strings). For front ends without iced's editor.
+pub struct LineHighlighter {
+    lang: Lang,
+    state: State,
+}
+
+impl LineHighlighter {
+    pub fn new(lang: Lang) -> Self {
+        Self { lang, state: State::Normal }
+    }
+
+    /// Byte ranges and kinds of the tokens in the next line.
+    pub fn line(&mut self, line: &str) -> Vec<(Range<usize>, Highlight)> {
+        let (tokens, next) = match self.lang {
+            Lang::Rust => lex_rust(line, self.state),
+            Lang::Python => lex_python(line, self.state),
+            Lang::Plain => (Vec::new(), State::Normal),
+        };
+        self.state = next;
+        tokens
+    }
+}
+
 /// Overlays diagnostic marks on the syntax tokens, producing non-overlapping spans.
 fn apply_marks<'a>(
     line: &str,
