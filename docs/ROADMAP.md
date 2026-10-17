@@ -1,6 +1,6 @@
 # Status and roadmap
 
-Last updated: 2026-10-17. Latest release: [v0.1.0](https://github.com/V3ct0r-8890/rust-ide/releases/tag/v0.1.0).
+Last updated: 2026-10-17. Latest release: [v0.2.0](https://github.com/V3ct0r-8890/rust-ide/releases/tag/v0.2.0).
 
 ## Done
 
