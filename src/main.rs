@@ -3,6 +3,7 @@
 // Release builds are GUI apps on Windows: no console window when started.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cursor;
 mod deps;
 mod highlight;
 mod lsp;
@@ -48,6 +49,47 @@ const COMPLETION_ROWS: usize = 10;
 const OUTPUT_INPUT: &str = "output-input";
 const SEARCH_INPUT: &str = "search-input";
 const EDITOR: &str = "editor";
+const HELP_SCROLL: &str = "help-scroll";
+
+/// Every keyboard shortcut, shown by F1. Grouped as (group, keys, action).
+const SHORTCUTS: &[(&str, &str, &str)] = &[
+    ("Menus", "F10", "Open the menu bar (File menu)"),
+    ("Menus", "Alt+F E S R C D O W H", "Open File, Edit, Search, Run, Compile, Debug, Options, Window, Help"),
+    ("Menus", "Left / Right", "Previous / next menu"),
+    ("Menus", "Up / Down, Enter", "Choose a menu item"),
+    ("Menus", "Red letter", "Run that menu item"),
+    ("Menus", "Esc", "Close the menu, dialog or panel"),
+    ("File", "F2 / Ctrl+S", "Save"),
+    ("File", "F3 / Ctrl+O", "Open"),
+    ("File", "Alt+F N / A", "New / Save as (File menu)"),
+    ("File", "Alt+X", "Exit (press twice to discard changes)"),
+    ("Edit", "Ctrl+Z / Ctrl+Y", "Undo / redo (Ctrl+Shift+Z also redoes)"),
+    ("Edit", "Tab / Shift+Tab", "Indent / unindent"),
+    ("Edit", "Ctrl+Space", "Code completion (also after . and ::)"),
+    ("Edit", "Up / Down, Enter, Esc", "In the completion list: choose, accept, close"),
+    ("Search", "Ctrl+F", "Find"),
+    ("Search", "Ctrl+H", "Replace"),
+    ("Search", "Ctrl+L", "Search again"),
+    ("Search", "Ctrl+G", "Go to line number"),
+    ("Search", "Enter", "In the Find box: next match (Previous is a button)"),
+    ("Search", "Tab", "Next field in the search bar"),
+    ("Search", "Alt+M", "Toggle match case"),
+    ("Compile", "F9 / Alt+F9", "Compile or check the current file"),
+    ("Compile", "Alt+F8 / Alt+F7", "Next / previous error or warning"),
+    ("Run", "F5 / Ctrl+F9", "Save, compile and run"),
+    ("Run", "Alt+F5", "Show / hide the Output window (User screen)"),
+    ("Run", "Ctrl+F2", "Program reset: stop the running program"),
+    ("Run", "Enter", "In the Output window: send the typed input"),
+    ("Options", "Alt+O D", "Dependencies: Up/Down, I install, C copy, G guide, R re-check, S startup check"),
+    ("Options", "Alt+O V", "Vim mode on / off"),
+    ("Help", "F1", "This list (Up/Down, Page Up/Down scroll; Esc or F1 closes)"),
+    ("Vim", "i a o O, Esc", "Insert mode, back to Normal"),
+    ("Vim", "h j k l w b e 0 ^ $ gg G", "Motions (with counts)"),
+    ("Vim", "d c y > < + motion", "Operators; dd yy cc >> << for lines"),
+    ("Vim", "x X D C Y p P J r u Ctrl+R", "Editing"),
+    ("Vim", "v, /text, n N", "Visual mode, search"),
+    ("Vim", ":w :q :q! :wq :<line>", "Commands"),
+];
 
 const USAGE: &str = "\
 Usage: rust-ide [OPTIONS] [FILE]
@@ -109,8 +151,127 @@ enum Menu {
     Search,
     Run,
     Compile,
+    Debug,
     Options,
+    Window,
     Help,
+}
+
+const MENUS: [Menu; 9] = [
+    Menu::File,
+    Menu::Edit,
+    Menu::Search,
+    Menu::Run,
+    Menu::Compile,
+    Menu::Debug,
+    Menu::Options,
+    Menu::Window,
+    Menu::Help,
+];
+
+impl Menu {
+    fn index(self) -> usize {
+        MENUS.iter().position(|&m| m == self).unwrap_or(0)
+    }
+
+    /// The Alt+letter that opens this menu (its first letter).
+    fn from_hotkey(c: char) -> Option<Menu> {
+        MENUS.iter().copied().find(|m| MENU_TITLES[m.index()].starts_with(c.to_ascii_uppercase()))
+    }
+}
+
+/// Keys that move around menus, dialogs and the help screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NavKey {
+    Up,
+    Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    Enter,
+    Tab,
+    Char(char),
+}
+
+/// One entry of a drop-down menu.
+struct MenuItem {
+    label: &'static str,
+    /// The letter (shown in red) that runs the item while the menu is open.
+    hotkey: char,
+    keys: &'static str,
+    /// None when the item is not available yet.
+    message: Option<Message>,
+}
+
+fn item(label: &'static str, hotkey: char, keys: &'static str, message: Message) -> MenuItem {
+    MenuItem { label, hotkey, keys, message: Some(message) }
+}
+
+fn menu_items(menu: Menu, vim_on: bool) -> Vec<MenuItem> {
+    let later = |label| MenuItem { label, hotkey: ' ', keys: "", message: None };
+    match menu {
+        Menu::File => vec![
+            item("New", 'n', "", Message::New),
+            item("Open...", 'o', "F3", Message::Open),
+            item("Save", 's', "F2", Message::Save),
+            item("Save as...", 'a', "", Message::SaveAs),
+            item("Exit", 'x', "Alt+X", Message::Exit),
+        ],
+        Menu::Edit => vec![
+            item("Undo", 'u', "Ctrl+Z", Message::Undo),
+            item("Redo", 'r', "Ctrl+Y", Message::Redo),
+        ],
+        Menu::Search => vec![
+            item("Find...", 'f', "Ctrl+F", Message::OpenSearch(SearchMode::Find)),
+            item("Replace...", 'r', "Ctrl+H", Message::OpenSearch(SearchMode::Replace)),
+            item("Search again", 's', "Ctrl+L", Message::FindNext),
+            item("Go to line number...", 'g', "Ctrl+G", Message::OpenSearch(SearchMode::GoTo)),
+        ],
+        Menu::Run => vec![
+            item("Run", 'r', "F5", Message::Run),
+            item("Run in external terminal", 'e', "", Message::RunExternal),
+            item("Program reset", 'p', "Ctrl+F2", Message::OutputStop),
+            item("User screen", 'u', "Alt+F5", Message::OutputToggle),
+        ],
+        Menu::Compile => vec![
+            item("Compile", 'c', "F9", Message::Compile),
+            item("Next message", 'n', "Alt+F8", Message::NextMessage),
+            item("Previous message", 'p', "Alt+F7", Message::PrevMessage),
+        ],
+        Menu::Debug => vec![later("Debugger: coming soon")],
+        Menu::Options => vec![
+            item("Dependencies...", 'd', "", Message::ShowDeps),
+            item(if vim_on { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
+        ],
+        Menu::Window => vec![later("Several windows: coming soon")],
+        Menu::Help => vec![
+            item("Keyboard shortcuts", 'k', "F1", Message::ToggleHelp),
+            item("Install guide (GitHub)", 'i', "", Message::OpenUrl(platform::INSTALL_GUIDE_URL)),
+            item("Project page (GitHub)", 'p', "", Message::OpenUrl(platform::GITHUB_URL)),
+        ],
+    }
+}
+
+/// Maps a key press to a navigation key.
+fn nav_key(key: &Key, modifiers: Modifiers, text: Option<&str>) -> Option<NavKey> {
+    use key::Named;
+    match key.as_ref() {
+        Key::Named(Named::ArrowUp) => Some(NavKey::Up),
+        Key::Named(Named::ArrowDown) => Some(NavKey::Down),
+        Key::Named(Named::ArrowLeft) => Some(NavKey::Left),
+        Key::Named(Named::ArrowRight) => Some(NavKey::Right),
+        Key::Named(Named::PageUp) => Some(NavKey::PageUp),
+        Key::Named(Named::PageDown) => Some(NavKey::PageDown),
+        Key::Named(Named::Home) => Some(NavKey::Home),
+        Key::Named(Named::End) => Some(NavKey::End),
+        Key::Named(Named::Enter) => Some(NavKey::Enter),
+        Key::Named(Named::Tab) => Some(NavKey::Tab),
+        _ if modifiers.control() || modifiers.alt() => None,
+        _ => text?.chars().find(|c| !c.is_control()).map(|c| NavKey::Char(c.to_ascii_lowercase())),
+    }
 }
 
 /// What to do once the file is saved (Save As may be pending).
@@ -162,6 +323,8 @@ struct OutputPane {
 
 struct DepsDialog {
     list: Vec<deps::Dep>,
+    /// The row chosen with Up/Down.
+    selected: usize,
     checking: bool,
     installing: Option<&'static str>,
     message: String,
@@ -204,6 +367,12 @@ struct Ide {
     last_case: bool,
     /// Highlights for the matches of the open search bar.
     search_marks: Arc<Vec<Mark>>,
+    /// The highlighted item of the open menu.
+    menu_item: usize,
+    /// The F1 help screen is open.
+    help: bool,
+    /// The Messages panel row chosen with Alt+F8 / Alt+F7.
+    message_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -230,6 +399,13 @@ struct Snapshot {
 enum Message {
     Edit(text_editor::Action),
     ToggleMenu(Menu),
+    OpenMenu(Menu),
+    MenuPick(usize),
+    Nav(NavKey),
+    ToggleHelp,
+    NextMessage,
+    PrevMessage,
+    ToggleMatchCase,
     CloseMenu,
     New,
     Open,
@@ -298,12 +474,13 @@ impl Ide {
                 ide.path = Some(path);
             }
         }
-        let task = if ide.check_at_startup {
+        let check = if ide.check_at_startup {
             Task::perform(platform::blocking(move || deps::check(os)), |list| Message::DepsChecked(list, true))
         } else {
             Task::none()
         };
-        (ide, task)
+        // Like Turbo Pascal, start with the cursor in the editor, ready to type.
+        (ide, Task::batch([check, iced::widget::operation::focus(EDITOR)]))
     }
 
     fn title(&self) -> String {
@@ -323,8 +500,10 @@ impl Ide {
                 key,
                 physical_key,
                 modifiers,
+                text,
                 ..
-            } => shortcut(&key, physical_key, modifiers),
+            } => shortcut(&key, physical_key, modifiers)
+                .or_else(|| nav_key(&key, modifiers, text.as_deref()).map(Message::Nav)),
             _ => None,
         });
         // Esc must work even when a text field has focus and captures it.
@@ -339,7 +518,22 @@ impl Ide {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
-        if !matches!(message, Message::Edit(_) | Message::Lsp(_)) {
+        // A command closes an open menu; navigation and background events do not.
+        let keeps_menu = matches!(
+            message,
+            Message::Edit(_)
+                | Message::Lsp(_)
+                | Message::Output(..)
+                | Message::BuildFinished(..)
+                | Message::DepsChecked(..)
+                | Message::DepInstalled(..)
+                | Message::ToggleMenu(_)
+                | Message::OpenMenu(_)
+                | Message::MenuPick(_)
+                | Message::Nav(_)
+                | Message::Escape
+        );
+        if !keeps_menu {
             self.menu = None;
         }
         // Background LSP events must not cancel a pending "press again to discard".
@@ -348,7 +542,33 @@ impl Ide {
         match message {
             Message::Edit(action) => self.edit(action),
             Message::ToggleMenu(menu) => {
-                self.menu = (self.menu != Some(menu)).then_some(menu);
+                if self.menu == Some(menu) {
+                    self.menu = None;
+                    Task::none()
+                } else {
+                    self.open_menu(menu)
+                }
+            }
+            Message::OpenMenu(menu) => self.open_menu(menu),
+            Message::MenuPick(index) => self.pick_menu_item(index),
+            Message::Nav(key) => self.navigate(key),
+            Message::ToggleHelp => {
+                self.help = !self.help;
+                Task::none()
+            }
+            Message::NextMessage => {
+                self.step_message(true);
+                Task::none()
+            }
+            Message::PrevMessage => {
+                self.step_message(false);
+                Task::none()
+            }
+            Message::ToggleMatchCase => {
+                if let Some(bar) = &mut self.search {
+                    bar.case = !bar.case;
+                }
+                self.refresh_search_marks();
                 Task::none()
             }
             Message::CloseMenu => Task::none(),
@@ -454,7 +674,11 @@ impl Ide {
                 Task::none()
             }
             Message::Escape => {
-                if self.deps.is_some() {
+                if self.menu.is_some() {
+                    self.menu = None;
+                } else if self.help {
+                    self.help = false;
+                } else if self.deps.is_some() {
                     self.deps = None;
                 } else if self.output.visible {
                     self.output.visible = false;
@@ -554,7 +778,8 @@ impl Ide {
                     }
                     .into()
                 });
-                self.deps = Some(DepsDialog { list, checking: false, installing: None, message });
+                let selected = self.deps.as_ref().map_or(0, |d| d.selected).min(list.len().saturating_sub(1));
+                self.deps = Some(DepsDialog { list, selected, checking: false, installing: None, message });
                 Task::none()
             }
             Message::DepInstall(index) => {
@@ -613,6 +838,7 @@ impl Ide {
             None => {
                 self.deps = Some(DepsDialog {
                     list: Vec::new(),
+                    selected: 0,
                     checking: true,
                     installing: None,
                     message: "Checking installed tools...".into(),
@@ -760,6 +986,148 @@ impl Ide {
     }
 
     // ----- Vim -----
+
+    // ----- Keyboard navigation -----
+
+    fn open_menu(&mut self, menu: Menu) -> Task<Message> {
+        self.menu = Some(menu);
+        let items = menu_items(menu, self.vim.is_some());
+        self.menu_item = items.iter().position(|i| i.message.is_some()).unwrap_or(0);
+        // Arrow keys must reach the menu, not a text field.
+        iced::widget::operation::focus(EDITOR)
+    }
+
+    fn pick_menu_item(&mut self, index: usize) -> Task<Message> {
+        let Some(menu) = self.menu else { return Task::none() };
+        let message = menu_items(menu, self.vim.is_some()).into_iter().nth(index).and_then(|i| i.message);
+        self.menu = None;
+        match message {
+            Some(message) => self.update(message),
+            None => Task::none(),
+        }
+    }
+
+    /// Arrow keys, Enter and letters for whatever modal thing is open.
+    fn navigate(&mut self, key: NavKey) -> Task<Message> {
+        if let Some(menu) = self.menu {
+            return self.menu_key(menu, key);
+        }
+        if self.help {
+            use iced::widget::scrollable::{AbsoluteOffset, RelativeOffset};
+            let scroll = |y| iced::widget::operation::scroll_by(HELP_SCROLL, AbsoluteOffset { x: 0.0, y });
+            return match key {
+                NavKey::Up => scroll(-24.0),
+                NavKey::Down => scroll(24.0),
+                NavKey::PageUp => scroll(-360.0),
+                NavKey::PageDown => scroll(360.0),
+                NavKey::Home => iced::widget::operation::snap_to(HELP_SCROLL, RelativeOffset::START),
+                NavKey::End => iced::widget::operation::snap_to(HELP_SCROLL, RelativeOffset::END),
+                NavKey::Enter => {
+                    self.help = false;
+                    Task::none()
+                }
+                _ => Task::none(),
+            };
+        }
+        if self.deps.is_some() {
+            return self.deps_key(key);
+        }
+        if self.search.is_some() && key == NavKey::Tab {
+            return iced::widget::operation::focus_next();
+        }
+        Task::none()
+    }
+
+    fn menu_key(&mut self, menu: Menu, key: NavKey) -> Task<Message> {
+        let items = menu_items(menu, self.vim.is_some());
+        let enabled: Vec<usize> = (0..items.len()).filter(|&i| items[i].message.is_some()).collect();
+        let step = |by: isize| {
+            let at = MENUS.len() as isize + menu.index() as isize + by;
+            MENUS[(at as usize) % MENUS.len()]
+        };
+        let move_item = |current: usize, down: bool| -> usize {
+            if enabled.is_empty() {
+                return current;
+            }
+            let pos = enabled.iter().position(|&i| i == current).unwrap_or(0);
+            let next = if down { (pos + 1) % enabled.len() } else { (pos + enabled.len() - 1) % enabled.len() };
+            enabled[next]
+        };
+        match key {
+            NavKey::Left => self.open_menu(step(-1)),
+            NavKey::Right | NavKey::Tab => self.open_menu(step(1)),
+            NavKey::Up => {
+                self.menu_item = move_item(self.menu_item, false);
+                Task::none()
+            }
+            NavKey::Down => {
+                self.menu_item = move_item(self.menu_item, true);
+                Task::none()
+            }
+            NavKey::Home | NavKey::PageUp => {
+                self.menu_item = enabled.first().copied().unwrap_or(0);
+                Task::none()
+            }
+            NavKey::End | NavKey::PageDown => {
+                self.menu_item = enabled.last().copied().unwrap_or(0);
+                Task::none()
+            }
+            NavKey::Enter => self.pick_menu_item(self.menu_item),
+            NavKey::Char(c) => match items.iter().position(|i| i.hotkey == c && i.message.is_some()) {
+                Some(index) => self.pick_menu_item(index),
+                None => Task::none(),
+            },
+        }
+    }
+
+    fn deps_key(&mut self, key: NavKey) -> Task<Message> {
+        let Some(dialog) = &mut self.deps else { return Task::none() };
+        let count = dialog.list.len();
+        let busy = dialog.checking || dialog.installing.is_some();
+        match key {
+            NavKey::Up if count > 0 => dialog.selected = (dialog.selected + count - 1) % count,
+            NavKey::Down if count > 0 => dialog.selected = (dialog.selected + 1) % count,
+            NavKey::Home => dialog.selected = 0,
+            NavKey::End => dialog.selected = count.saturating_sub(1),
+            _ => {}
+        }
+        let selected = dialog.selected;
+        let dep = dialog.list.get(selected).filter(|d| d.missing());
+        let can_install = dep.is_some_and(|d| d.auto.is_some()) && !busy;
+        let install_text = dep.map(|d| d.install.clone());
+        match key {
+            NavKey::Char('i') if can_install => self.update(Message::DepInstall(selected)),
+            NavKey::Enter if can_install => self.update(Message::DepInstall(selected)),
+            NavKey::Char('c') | NavKey::Enter => match install_text {
+                Some(text) => self.update(Message::CopyText(text)),
+                None => Task::none(),
+            },
+            NavKey::Char('g') => self.update(Message::OpenUrl(platform::INSTALL_GUIDE_URL)),
+            NavKey::Char('r') if !busy => self.update(Message::ShowDeps),
+            NavKey::Char('s') => self.update(Message::ToggleStartupCheck(!self.check_at_startup)),
+            _ => Task::none(),
+        }
+    }
+
+    /// Alt+F8 / Alt+F7: jump to the next or previous Messages row.
+    fn step_message(&mut self, forward: bool) {
+        let items = self.panel_items();
+        if items.is_empty() {
+            self.status = "No messages".into();
+            return;
+        }
+        let count = items.len();
+        let index = match self.message_index {
+            Some(i) if forward => (i + 1) % count,
+            Some(i) => (i.min(count - 1) + count - 1) % count,
+            None if forward => 0,
+            None => count - 1,
+        };
+        self.message_index = Some(index);
+        let item = items[index].clone();
+        self.status = format!("{} {}/{}: {}", item.level.to_uppercase(), index + 1, count, item.message);
+        self.jump_to(&item);
+    }
 
     // ----- Search -----
 
@@ -955,7 +1323,7 @@ impl Ide {
                     label(" Find:        "),
                     input(&bar.query, Message::SearchQuery, Message::FindNext, 260.0).id(SEARCH_INPUT),
                     checkbox(bar.case)
-                        .label("Case")
+                        .label("Match case (Alt+M)")
                         .on_toggle(Message::SearchCase)
                         .style(|theme, status| iced::widget::checkbox::Style {
                             text_color: Some(Color::BLACK),
@@ -1098,6 +1466,7 @@ impl Ide {
 
     fn finish_build(&mut self, result: BuildResult, after: AfterSave) -> Task<Message> {
         self.diagnostics = result.diagnostics;
+        self.message_index = None;
         let errors = self.diagnostics.iter().filter(|d| d.level == "error").count();
         let warnings = self.diagnostics.len() - errors;
 
@@ -1352,22 +1721,13 @@ impl Ide {
     // ----- View -----
 
     fn view(&self) -> Element<'_, Message> {
-        let menu_bar = container(row(MENU_TITLES.iter().map(|&title| {
-            let menu = match title {
-                "File" => Some(Menu::File),
-                "Edit" => Some(Menu::Edit),
-                "Search" => Some(Menu::Search),
-                "Run" => Some(Menu::Run),
-                "Compile" => Some(Menu::Compile),
-                "Options" => Some(Menu::Options),
-                "Help" => Some(Menu::Help),
-                _ => None,
-            };
-            let open = menu.is_some() && menu == self.menu;
-            button(text(title).color(Color::BLACK))
+        let menu_bar = container(row(MENUS.iter().map(|&menu| {
+            let title = MENU_TITLES[menu.index()];
+            let open = self.menu == Some(menu);
+            button(hotkey_label(title, title.chars().next().unwrap_or(' ')))
                 .width(MENU_TITLE_WIDTH)
                 .padding([4, 10])
-                .on_press_maybe(menu.map(Message::ToggleMenu))
+                .on_press(Message::ToggleMenu(menu))
                 .style(move |_, status| menu_title_style(open, status))
                 .into()
         })))
@@ -1375,6 +1735,8 @@ impl Ide {
         .style(|_| container::Style::default().background(TURBO_GRAY));
 
         let popup_open = self.completion.is_some();
+        // While a menu, dialog or the help screen is open, keys drive it, not the text.
+        let modal = self.menu.is_some() || self.help || self.deps.is_some();
         let vim_mode = self.vim.as_ref().map(|v| (v.mode, v.command.is_some()));
         let editor = text_editor(&self.content)
             .id(EDITOR)
@@ -1393,6 +1755,13 @@ impl Ide {
                 highlight::to_format,
             )
             .key_binding(move |press: KeyPress| {
+                if modal {
+                    if let Some(message) = shortcut(&press.key, press.physical_key, press.modifiers) {
+                        return Some(Binding::Custom(message));
+                    }
+                    return nav_key(&press.key, press.modifiers, press.text.as_deref())
+                        .map(|key| Binding::Custom(Message::Nav(key)));
+                }
                 if popup_open && let Some(nav) = completion_key(&press.key) {
                     return Some(Binding::Custom(Message::CompletionNav(nav)));
                 }
@@ -1404,6 +1773,10 @@ impl Ide {
                 {
                     return Some(Binding::Custom(Message::Vim(key)));
                 }
+                if let Key::Named(key::Named::Tab) = press.key.as_ref() {
+                    let edit = if press.modifiers.shift() { Edit::Unindent } else { Edit::Indent };
+                    return Some(Binding::Custom(Message::Edit(Action::Edit(edit))));
+                }
                 Binding::from_key_press(press)
             })
             .style(|theme, status| text_editor::Style {
@@ -1411,6 +1784,8 @@ impl Ide {
                 value: TURBO_YELLOW,
                 ..text_editor::default(theme, status)
             });
+
+        let editor = cursor::BlockCursor::new(editor, &self.content, TURBO_YELLOW, TURBO_BLUE);
 
         let panel = self.panel_items();
         let mut layout = column![menu_bar];
@@ -1440,13 +1815,16 @@ impl Ide {
         if let Some(dialog) = &self.deps {
             layers = layers.push(self.deps_dialog(dialog));
         }
+        if self.help {
+            layers = layers.push(help_screen());
+        }
         if let Some(menu) = self.menu {
             layers = layers
                 .push(
                     mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
                         .on_press(Message::CloseMenu),
                 )
-                .push(dropdown(menu, self.vim.is_some()));
+                .push(dropdown(menu, self.vim.is_some(), self.menu_item));
         }
         layers.into()
     }
@@ -1527,16 +1905,27 @@ impl Ide {
                 .spacing(6)
                 .into(),
             };
-            row![
-                text(mark).color(color).width(64),
-                column![
-                    text(dep.name).color(Color::BLACK),
-                    text(format!("{} ({need})", dep.purpose)).color(TURBO_DARK_GRAY).size(12),
+            let selected = index == dialog.selected;
+            container(
+                row![
+                    text(mark).color(color).width(64),
+                    column![
+                        text(dep.name).color(Color::BLACK),
+                        text(format!("{} ({need})", dep.purpose)).color(TURBO_DARK_GRAY).size(12),
+                    ]
+                    .width(300),
+                    detail,
                 ]
-                .width(300),
-                detail,
-            ]
-            .spacing(8)
+                .spacing(8),
+            )
+            .padding([2, 4])
+            .style(move |_| {
+                if selected {
+                    container::Style::default().background(TURBO_CYAN)
+                } else {
+                    container::Style::default()
+                }
+            })
             .into()
         });
 
@@ -1566,8 +1955,13 @@ impl Ide {
             container(header).width(Length::Fill).padding(2).style(|_| {
                 container::Style::default().background(TURBO_BLUE)
             }),
-            column(rows).spacing(10).padding(10),
+            column(rows).spacing(6).padding(10),
             container(text(message).color(TURBO_RED)).padding([0, 10]),
+            container(
+                text(" Up/Down select   I install   C copy   G guide   R re-check   S startup check   Esc close")
+                    .color(TURBO_DARK_GRAY),
+            )
+            .padding([4, 10]),
             container(buttons).padding(10),
         ];
 
@@ -1627,7 +2021,11 @@ impl Ide {
     }
 
     fn messages_panel(&self, items: Vec<Diagnostic>) -> Element<'_, Message> {
-        let title = if self.diagnostics.is_empty() { " Messages (live) " } else { " Messages " };
+        let title = if self.diagnostics.is_empty() {
+            " Messages (live)   Alt+F8 next  Alt+F7 previous "
+        } else {
+            " Messages   Alt+F8 next  Alt+F7 previous "
+        };
         let rows = items.into_iter().enumerate().map(|(index, d)| {
             let location = match (&d.file, d.line) {
                 (Some(file), line) if line > 0 => format!(
@@ -1638,12 +2036,13 @@ impl Ide {
                 _ => String::new(),
             };
             let color = if d.level == "error" { TURBO_RED } else { Color::BLACK };
+            let chosen = self.message_index == Some(index);
             button(text(format!("{} {location}{}", d.level.to_uppercase(), d.message)).color(color))
                 .width(Length::Fill)
                 .padding([1, 8])
                 .on_press(Message::JumpTo(index))
-                .style(|_, status| button::Style {
-                    background: matches!(status, button::Status::Hovered)
+                .style(move |_, status| button::Style {
+                    background: (chosen || matches!(status, button::Status::Hovered))
                         .then(|| Background::Color(TURBO_GREEN)),
                     text_color: Color::BLACK,
                     ..button::Style::default()
@@ -1715,6 +2114,11 @@ fn is_ident(c: char) -> bool {
 /// Global shortcuts, Turbo Pascal style (plus the usual Ctrl+S / Ctrl+O).
 fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<Message> {
     match key.as_ref() {
+        Key::Named(key::Named::F1) => Some(Message::ToggleHelp),
+        Key::Named(key::Named::F10) => Some(Message::OpenMenu(Menu::File)),
+        Key::Named(key::Named::F7) if modifiers.alt() => Some(Message::PrevMessage),
+        Key::Named(key::Named::F8) if modifiers.alt() => Some(Message::NextMessage),
+        Key::Named(key::Named::F9) if modifiers.alt() => Some(Message::Compile),
         Key::Named(key::Named::F2) if modifiers.control() => Some(Message::OutputStop),
         Key::Named(key::Named::F2) => Some(Message::Save),
         Key::Named(key::Named::F3) => Some(Message::Open),
@@ -1725,6 +2129,8 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
         Key::Named(key::Named::Space) if modifiers.control() => Some(Message::TriggerCompletion),
         _ => match key.to_latin(physical) {
             Some('x') if modifiers.alt() => Some(Message::Exit),
+            Some('m') if modifiers.alt() => Some(Message::ToggleMatchCase),
+            Some(c) if modifiers.alt() && !modifiers.control() => Menu::from_hotkey(c).map(Message::OpenMenu),
             Some('s') if modifiers.command() => Some(Message::Save),
             Some('o') if modifiers.command() => Some(Message::Open),
             Some('z') if modifiers.command() && modifiers.shift() => Some(Message::Redo),
@@ -1795,77 +2201,86 @@ fn save_as_dialog(after: AfterSave) -> Task<Message> {
     )
 }
 
-fn dropdown(menu: Menu, vim_on: bool) -> Element<'static, Message> {
-    let vim_label = if vim_on { "Vim mode           [x]" } else { "Vim mode           [ ]" };
-    let options = [
-        ("Dependencies...", "", Message::ShowDeps),
-        (vim_label, "", Message::ToggleVim),
-    ];
-    let (index, items): (usize, &[(&str, &str, Message)]) = match menu {
-        Menu::Edit => (1, &[("Undo", "Ctrl+Z", Message::Undo), ("Redo", "Ctrl+Y", Message::Redo)]),
-        Menu::Search => (
-            2,
-            &[
-                ("Find...", "Ctrl+F", Message::OpenSearch(SearchMode::Find)),
-                ("Replace...", "Ctrl+H", Message::OpenSearch(SearchMode::Replace)),
-                ("Search again", "Ctrl+L", Message::FindNext),
-                ("Go to line number...", "Ctrl+G", Message::OpenSearch(SearchMode::GoTo)),
-            ],
-        ),
-        Menu::File => (
-            0,
-            &[
-                ("New", "", Message::New),
-                ("Open...", "F3", Message::Open),
-                ("Save", "F2", Message::Save),
-                ("Save as...", "", Message::SaveAs),
-                ("Exit", "Alt+X", Message::Exit),
-            ],
-        ),
-        Menu::Run => (
-            3,
-            &[
-                ("Run", "F5", Message::Run),
-                ("Run in external terminal", "", Message::RunExternal),
-                ("Program reset", "Ctrl+F2", Message::OutputStop),
-                ("User screen", "Alt+F5", Message::OutputToggle),
-            ],
-        ),
-        Menu::Compile => (4, &[("Compile", "F9", Message::Compile)]),
-        Menu::Options => (6, &options),
-        Menu::Help => (
-            8,
-            &[
-                ("Install guide (GitHub)", "", Message::OpenUrl(platform::INSTALL_GUIDE_URL)),
-                ("Project page (GitHub)", "", Message::OpenUrl(platform::GITHUB_URL)),
-            ],
-        ),
-    };
-
-    let entries = items.iter().map(|(label, keys, message)| {
-        button(row![
-            text(*label).color(Color::BLACK),
-            Space::new().width(Length::Fill),
-            text(*keys).color(Color::BLACK),
-        ])
-        .width(290)
-        .padding([3, 10])
-        .on_press(message.clone())
-        .style(|_, status| button::Style {
-            background: Some(Background::Color(
-                if matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
-            )),
-            ..button::Style::default()
-        })
-        .into()
+fn dropdown(menu: Menu, vim_on: bool, selected: usize) -> Element<'static, Message> {
+    let entries = menu_items(menu, vim_on).into_iter().enumerate().map(|(index, item)| {
+        let enabled = item.message.is_some();
+        let label: Element<'static, Message> = if enabled {
+            hotkey_label(item.label, item.hotkey)
+        } else {
+            text(item.label).color(TURBO_DARK_GRAY).into()
+        };
+        let chosen = index == selected && enabled;
+        button(row![label, Space::new().width(Length::Fill), text(item.keys).color(Color::BLACK)])
+            .width(290)
+            .padding([3, 10])
+            .on_press_maybe(enabled.then_some(Message::MenuPick(index)))
+            .style(move |_, status| button::Style {
+                background: Some(Background::Color(
+                    if chosen || (enabled && matches!(status, button::Status::Hovered)) {
+                        TURBO_GREEN
+                    } else {
+                        TURBO_GRAY
+                    },
+                )),
+                ..button::Style::default()
+            })
+            .into()
     });
 
     container(container(column(entries)).style(|_| container::Style {
         border: iced::Border::default().color(Color::BLACK).width(1),
         ..container::Style::default().background(TURBO_GRAY)
     }))
-    .padding(Padding::default().top(MENU_BAR_HEIGHT).left(index as f32 * MENU_TITLE_WIDTH))
+    .padding(Padding::default().top(MENU_BAR_HEIGHT).left(menu.index() as f32 * MENU_TITLE_WIDTH))
     .into()
+}
+
+/// A label with its hotkey letter in red, Turbo Pascal style.
+fn hotkey_label(label: &'static str, hotkey: char) -> Element<'static, Message> {
+    let at = label.char_indices().find(|(_, c)| c.eq_ignore_ascii_case(&hotkey)).map(|(i, _)| i);
+    match at {
+        Some(i) => {
+            let end = i + label[i..].chars().next().map_or(0, char::len_utf8);
+            row![
+                text(&label[..i]).color(Color::BLACK),
+                text(&label[i..end]).color(TURBO_RED),
+                text(&label[end..]).color(Color::BLACK),
+            ]
+            .into()
+        }
+        None => text(label).color(Color::BLACK).into(),
+    }
+}
+
+/// F1: every keyboard shortcut, grouped.
+fn help_screen() -> Element<'static, Message> {
+    let mut lines: Vec<Element<'static, Message>> = Vec::new();
+    let mut group = "";
+    for &(g, keys, action) in SHORTCUTS {
+        if g != group {
+            group = g;
+            lines.push(text(format!(" {g}")).color(TURBO_YELLOW).into());
+        }
+        lines.push(
+            row![text(format!("   {keys}")).color(Color::WHITE).width(330), text(action).color(SCREEN_TEXT)].into(),
+        );
+    }
+    let title = container(
+        text(" Keyboard shortcuts    Up/Down/PgUp/PgDn scroll    Esc or F1 closes ").color(Color::BLACK),
+    )
+    .width(Length::Fill)
+    .style(|_| container::Style::default().background(TURBO_GRAY));
+    let list = scrollable(column(lines).spacing(2).padding([6, 8])).id(HELP_SCROLL).height(Length::Fill);
+    let window = container(column![title, list]).style(|_| container::Style {
+        border: iced::Border::default().color(TURBO_GRAY).width(2),
+        ..container::Style::default().background(TURBO_CYAN)
+    });
+    opaque(
+        container(window)
+            .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(STATUS_BAR_HEIGHT + 8.0).left(60.0).right(60.0))
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
 }
 
 /// A Turbo-style dialog button; disabled when `message` is None.
@@ -2013,5 +2428,132 @@ mod tests {
         send(&mut ide, [Message::Escape]);
         assert!(ide.search.is_none());
         assert!(ide.search_marks.is_empty(), "closing clears the highlights");
+    }
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+
+    fn ide(text: &str) -> Ide {
+        let mut ide = Ide::default();
+        ide.content = text_editor::Content::with_text(text);
+        ide
+    }
+
+    fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
+        for message in messages {
+            let _ = ide.update(message);
+        }
+    }
+
+    #[test]
+    fn menus_open_move_and_run_items() {
+        let mut ide = ide("text");
+        send(&mut ide, [Message::OpenMenu(Menu::Search), Message::Nav(NavKey::Down)]);
+        assert_eq!((ide.menu, ide.menu_item), (Some(Menu::Search), 1));
+        send(&mut ide, [Message::Nav(NavKey::Enter)]);
+        assert!(ide.menu.is_none());
+        assert_eq!(ide.search.as_ref().map(|b| b.mode), Some(SearchMode::Replace));
+
+        send(&mut ide, [Message::OpenMenu(Menu::Search), Message::Nav(NavKey::Char('g'))]);
+        assert_eq!(ide.search.as_ref().map(|b| b.mode), Some(SearchMode::GoTo), "hotkey letter");
+    }
+
+    #[test]
+    fn menu_left_right_wrap_and_skip_disabled() {
+        let mut ide = ide("");
+        send(&mut ide, [Message::OpenMenu(Menu::File), Message::Nav(NavKey::Left)]);
+        assert_eq!(ide.menu, Some(Menu::Help));
+        send(&mut ide, [Message::Nav(NavKey::Right)]);
+        assert_eq!(ide.menu, Some(Menu::File));
+        send(&mut ide, [Message::Nav(NavKey::Up)]);
+        assert_eq!(ide.menu_item, 4, "Up from the first item wraps to Exit");
+
+        send(&mut ide, [Message::OpenMenu(Menu::Debug), Message::Nav(NavKey::Enter)]);
+        assert!(ide.menu.is_none(), "a disabled item does nothing but close");
+    }
+
+    #[test]
+    fn alt_letters_and_function_keys_map_to_menus_and_help() {
+        let alt = Modifiers::ALT;
+        let key = |c: &str| Key::Character(c.into());
+        let physical = key::Physical::Unidentified(key::NativeCode::Unidentified);
+        assert!(matches!(shortcut(&key("s"), physical, alt), Some(Message::OpenMenu(Menu::Search))));
+        assert!(matches!(shortcut(&key("h"), physical, alt), Some(Message::OpenMenu(Menu::Help))));
+        assert!(matches!(shortcut(&key("x"), physical, alt), Some(Message::Exit)));
+        assert!(matches!(shortcut(&key("m"), physical, alt), Some(Message::ToggleMatchCase)));
+        let f = |n| Key::Named(n);
+        assert!(matches!(shortcut(&f(key::Named::F1), physical, Modifiers::empty()), Some(Message::ToggleHelp)));
+        assert!(matches!(shortcut(&f(key::Named::F10), physical, Modifiers::empty()), Some(Message::OpenMenu(Menu::File))));
+        assert!(matches!(shortcut(&f(key::Named::F8), physical, alt), Some(Message::NextMessage)));
+    }
+
+    #[test]
+    fn escape_closes_menu_then_help() {
+        let mut ide = ide("");
+        send(&mut ide, [Message::ToggleHelp, Message::OpenMenu(Menu::File)]);
+        send(&mut ide, [Message::Escape]);
+        assert!(ide.menu.is_none() && ide.help);
+        send(&mut ide, [Message::Escape]);
+        assert!(!ide.help);
+    }
+
+    #[test]
+    fn messages_step_with_alt_f8_and_f7() {
+        let mut ide = ide("a\nb\nc\n");
+        let diagnostic = |line| Diagnostic {
+            file: None,
+            line,
+            column: 1,
+            level: "error".into(),
+            message: format!("bad {line}"),
+        };
+        ide.diagnostics = vec![diagnostic(2), diagnostic(3)];
+        send(&mut ide, [Message::NextMessage]);
+        assert_eq!(ide.content.cursor().position.line, 1);
+        assert!(ide.status.starts_with("ERROR 1/2"));
+        send(&mut ide, [Message::NextMessage]);
+        assert_eq!(ide.content.cursor().position.line, 2);
+        send(&mut ide, [Message::NextMessage]);
+        assert_eq!(ide.message_index, Some(0), "wraps around");
+        send(&mut ide, [Message::PrevMessage]);
+        assert_eq!(ide.message_index, Some(1));
+    }
+
+    #[test]
+    fn dependency_dialog_keys() {
+        let mut ide = ide("");
+        let dep = |name, found: Option<&str>| deps::Dep {
+            name,
+            purpose: "",
+            need: deps::Need::Recommended,
+            found: found.map(String::from),
+            install: format!("install {name}"),
+            auto: None,
+        };
+        ide.deps = Some(DepsDialog {
+            list: vec![dep("one", Some("1.0")), dep("two", None)],
+            selected: 0,
+            checking: false,
+            installing: None,
+            message: String::new(),
+        });
+        send(&mut ide, [Message::Nav(NavKey::Down)]);
+        assert_eq!(ide.deps.as_ref().map(|d| d.selected), Some(1));
+        send(&mut ide, [Message::Nav(NavKey::Char('c'))]);
+        assert_eq!(ide.status, "Command copied to the clipboard");
+        send(&mut ide, [Message::Nav(NavKey::Down)]);
+        assert_eq!(ide.deps.as_ref().map(|d| d.selected), Some(0), "wraps around");
+    }
+
+    #[test]
+    fn tab_indents_and_shift_tab_unindents() {
+        let mut ide = ide("x");
+        send(&mut ide, [Message::Edit(Action::Edit(Edit::Indent))]);
+        let indented = ide.content.text();
+        assert!(indented.ends_with('x') && indented.len() > 1, "{indented:?}");
+        send(&mut ide, [Message::Edit(Action::Edit(Edit::Unindent))]);
+        assert_eq!(ide.content.text(), "x");
     }
 }

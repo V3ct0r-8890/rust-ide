@@ -25,8 +25,12 @@ Back-end engines (run invisibly by the IDE, never typed by the user):
 
 ## Keys
 
+Everything works from the keyboard. **F1 lists every shortcut.**
+
 | Key | Action |
 |---|---|
+| F1 | Keyboard shortcut list |
+| F10 / Alt+letter | Open a menu (Alt+F File, Alt+E Edit, Alt+S Search, Alt+R Run, Alt+C Compile, Alt+O Options, Alt+H Help); arrows and Enter, or the red letter, choose an item |
 | F2 / Ctrl+S | Save (asks for a name the first time) |
 | F3 / Ctrl+O | Open |
 | F9 | Compile / syntax-check, list errors, jump to the first one |
@@ -38,6 +42,9 @@ Back-end engines (run invisibly by the IDE, never typed by the user):
 | Ctrl+F / Ctrl+H | Find / Replace bar (all matches highlighted, "Match 2 of 7" in the status bar) |
 | Ctrl+L | Search again (Turbo Pascal's key), even with the bar closed |
 | Ctrl+G | Go to line number |
+| Alt+M | Match case on/off in the search bar (Tab moves between its fields) |
+| Alt+F8 / Alt+F7 | Next / previous error in the Messages panel |
+| Tab / Shift+Tab | Indent / unindent |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
 The Output window shows the program's output and has an input line for programs that read
@@ -76,7 +83,7 @@ To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging
 
 ## Status
 
-Done: editor, build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
+Done: editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
 and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
 Windows and Linux packages.
 
