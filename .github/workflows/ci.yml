@@ -19,7 +19,7 @@ jobs:
       - run: cargo build --locked
       - run: cargo test --locked
       - name: Debugger tests (gdb and debugpy)
-        run: cargo test --locked dap:: -- --ignored --test-threads=1
+        run: "cargo test --locked dap:: -- --ignored --test-threads=1"
 
   redhat:
     name: ${{ matrix.image }}
