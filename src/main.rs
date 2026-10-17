@@ -1,9 +1,10 @@
-//! rust-ide: a Turbo Pascal–style IDE for Rust and Python (iced GUI front end).
+//! rust-ide: a Turbo Pascalâ€“style IDE for Rust and Python (iced GUI front end).
 
 // Release builds are GUI apps on Windows: no console window when started.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cursor;
+mod dap;
 mod deps;
 mod highlight;
 mod lsp;
@@ -13,6 +14,7 @@ mod runner;
 mod search;
 mod vim;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -89,6 +91,14 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Vim", "x X D C Y p P J r u Ctrl+R", "Editing"),
     ("Vim", "v, /text, n N", "Visual mode, search"),
     ("Vim", ":w :q :q! :wq :<line>", "Commands"),
+    ("Debug", "Ctrl+F8", "Toggle breakpoint on the cursor line"),
+    ("Debug", "F7 / F8", "Trace into / step over (starts debugging at the first line)"),
+    ("Debug", "Shift+F8", "Step out of the current function"),
+    ("Debug", "F4", "Go to cursor: run to the cursor line"),
+    ("Debug", "Shift+F5", "Debug run: run to the next breakpoint"),
+    ("Debug", "F5 / Ctrl+F9", "While debugging: continue"),
+    ("Debug", "Ctrl+F7", "Add a watch expression"),
+    ("Debug", "Ctrl+F2", "Program reset: stop debugging"),
 ];
 
 const USAGE: &str = "\
@@ -241,7 +251,18 @@ fn menu_items(menu: Menu, vim_on: bool) -> Vec<MenuItem> {
             item("Next message", 'n', "Alt+F8", Message::NextMessage),
             item("Previous message", 'p', "Alt+F7", Message::PrevMessage),
         ],
-        Menu::Debug => vec![later("Debugger: coming soon")],
+        Menu::Debug => vec![
+            item("Toggle breakpoint", 'b', "Ctrl+F8", Message::ToggleBreakpoint),
+            item("Debug run", 'd', "Shift+F5", Message::DebugRun),
+            item("Trace into", 't', "F7", Message::DebugStep(Step::Into)),
+            item("Step over", 's', "F8", Message::DebugStep(Step::Over)),
+            item("Step out", 'o', "Shift+F8", Message::DebugStep(Step::Out)),
+            item("Go to cursor", 'g', "F4", Message::GoToCursor),
+            item("Add watch...", 'w', "Ctrl+F7", Message::OpenSearch(SearchMode::Watch)),
+            item("Clear watches", 'c', "", Message::ClearWatches),
+            item("Clear breakpoints", 'l', "", Message::ClearBreakpoints),
+            item("Program reset", 'r', "Ctrl+F2", Message::OutputStop),
+        ],
         Menu::Options => vec![
             item("Dependencies...", 'd', "", Message::ShowDeps),
             item(if vim_on { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
@@ -281,6 +302,35 @@ enum AfterSave {
     Compile,
     Run,
     RunExternal,
+    Debug(DebugStart),
+}
+
+/// How a debug session starts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DebugStart {
+    /// F7 / F8: stop at the first line of the program.
+    Entry,
+    /// Shift+F5: run until a breakpoint.
+    Breakpoints,
+    /// F4: run to this line (0-based) of the current file.
+    ToLine(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Step {
+    Into,
+    Over,
+    Out,
+}
+
+/// A running debug session.
+#[derive(Default)]
+struct DebugSession {
+    handle: Option<dap::Handle>,
+    /// Where execution is stopped (file as shown in the editor, 0-based line).
+    stopped_at: Option<(PathBuf, usize)>,
+    frames: Vec<dap::Frame>,
+    locals: Vec<dap::Variable>,
 }
 
 /// Commands that throw away unsaved edits and therefore need a second press.
@@ -373,6 +423,12 @@ struct Ide {
     help: bool,
     /// The Messages panel row chosen with Alt+F8 / Alt+F7.
     message_index: Option<usize>,
+    /// Breakpoints: file -> 0-based lines.
+    breakpoints: BTreeMap<PathBuf, BTreeSet<usize>>,
+    /// Watch expressions and their last values.
+    watches: Vec<(String, String)>,
+    debug: Option<DebugSession>,
+    debug_run_id: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -380,6 +436,8 @@ enum SearchMode {
     Find,
     Replace,
     GoTo,
+    /// The "Add watch" input (Ctrl+F7).
+    Watch,
 }
 
 struct SearchBar {
@@ -451,6 +509,14 @@ enum Message {
     ReplaceAll,
     GoToLine,
     CloseSearch,
+    ToggleBreakpoint,
+    ClearBreakpoints,
+    DebugStep(Step),
+    DebugRun,
+    GoToCursor,
+    AddWatch,
+    ClearWatches,
+    Debug(u64, dap::Event),
 }
 
 impl Ide {
@@ -527,6 +593,7 @@ impl Ide {
                 | Message::BuildFinished(..)
                 | Message::DepsChecked(..)
                 | Message::DepInstalled(..)
+                | Message::Debug(..)
                 | Message::ToggleMenu(_)
                 | Message::OpenMenu(_)
                 | Message::MenuPick(_)
@@ -624,7 +691,71 @@ impl Ide {
                 iced::exit()
             }
             Message::Compile => self.save(AfterSave::Compile),
+            Message::Run if self.debug.is_some() => {
+                self.debug_command(dap::Command::Continue);
+                Task::none()
+            }
             Message::Run => self.save(AfterSave::Run),
+            Message::ToggleBreakpoint => {
+                self.toggle_breakpoint();
+                Task::none()
+            }
+            Message::ClearBreakpoints => {
+                let files: Vec<PathBuf> = std::mem::take(&mut self.breakpoints).into_keys().collect();
+                for path in files {
+                    self.debug_command(dap::Command::SetBreakpoints { path, lines: Vec::new() });
+                }
+                self.status = "All breakpoints cleared".into();
+                Task::none()
+            }
+            Message::DebugStep(step) => {
+                if self.debug.is_some() {
+                    self.debug_command(match step {
+                        Step::Into => dap::Command::StepIn,
+                        Step::Over => dap::Command::Next,
+                        Step::Out => dap::Command::StepOut,
+                    });
+                    Task::none()
+                } else {
+                    self.save(AfterSave::Debug(DebugStart::Entry))
+                }
+            }
+            Message::DebugRun => {
+                if self.debug.is_some() {
+                    self.debug_command(dap::Command::Continue);
+                    Task::none()
+                } else {
+                    self.save(AfterSave::Debug(DebugStart::Breakpoints))
+                }
+            }
+            Message::GoToCursor => {
+                let line = self.content.cursor().position.line;
+                match (&self.debug, self.path.clone()) {
+                    (Some(_), Some(path)) => {
+                        self.debug_command(dap::Command::RunTo { path, line: line + 1 });
+                        Task::none()
+                    }
+                    _ => self.save(AfterSave::Debug(DebugStart::ToLine(line))),
+                }
+            }
+            Message::AddWatch => {
+                let expression = self.search.as_ref().map(|b| b.query.trim().to_string()).unwrap_or_default();
+                if !expression.is_empty() && !self.watches.iter().any(|(e, _)| *e == expression) {
+                    self.watches.push((expression.clone(), String::new()));
+                    self.debug_command(dap::Command::Evaluate { expression });
+                }
+                self.close_search()
+            }
+            Message::ClearWatches => {
+                self.watches.clear();
+                Task::none()
+            }
+            Message::Debug(run_id, event) => {
+                if run_id == self.debug_run_id {
+                    return self.debug_event(event);
+                }
+                Task::none()
+            }
             Message::RunExternal => self.save(AfterSave::RunExternal),
             Message::BuildFinished(result, after) => {
                 self.building = false;
@@ -752,6 +883,14 @@ impl Ide {
                 } else {
                     Task::none()
                 }
+            }
+            Message::OutputStop if self.debug.is_some() => {
+                if let Some(handle) = self.debug.as_ref().and_then(|d| d.handle.clone()) {
+                    handle.send(dap::Command::Terminate);
+                    handle.kill();
+                }
+                self.status = "Program reset".into();
+                Task::none()
             }
             Message::OutputStop => {
                 match &self.output.handle {
@@ -987,6 +1126,242 @@ impl Ide {
 
     // ----- Vim -----
 
+    // ----- Debugger -----
+
+    fn debug_command(&self, command: dap::Command) {
+        if let Some(handle) = self.debug.as_ref().and_then(|d| d.handle.as_ref()) {
+            handle.send(command);
+        }
+    }
+
+    fn toggle_breakpoint(&mut self) {
+        let Some(path) = self.path.clone() else {
+            self.status = "Save the file first to set breakpoints".into();
+            return;
+        };
+        let line = self.content.cursor().position.line;
+        let lines = self.breakpoints.entry(path.clone()).or_default();
+        let added = lines.insert(line);
+        if !added {
+            lines.remove(&line);
+        }
+        let one_based: Vec<usize> = lines.iter().map(|l| l + 1).collect();
+        if lines.is_empty() {
+            self.breakpoints.remove(&path);
+        }
+        self.status = format!("Breakpoint {} on line {}", if added { "set" } else { "removed" }, line + 1);
+        self.debug_command(dap::Command::SetBreakpoints { path, lines: one_based });
+    }
+
+    fn start_debug(&mut self, target: RunTarget, start: DebugStart) -> Task<Message> {
+        let Some(path) = self.path.clone() else { return Task::none() };
+        let root = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let breakpoints: BTreeMap<PathBuf, Vec<usize>> = self
+            .breakpoints
+            .iter()
+            .map(|(file, lines)| (file.clone(), lines.iter().map(|l| l + 1).collect()))
+            .collect();
+        let temporary = match start {
+            DebugStart::ToLine(line) => Some((path.clone(), line + 1)),
+            _ => None,
+        };
+
+        let launch = match Lang::from_path(Some(&path)) {
+            Lang::Rust => {
+                let Some((gdb, _)) = dap::find_gdb() else {
+                    self.status = "Debugging Rust needs gdb 14 or newer (see Options > Dependencies)".into();
+                    return Task::none();
+                };
+                dap::Launch {
+                    adapter: dap::Adapter::Gdb,
+                    command: vec![gdb.to_string_lossy().into_owned(), "-q".into(), "-i".into(), "dap".into()],
+                    arguments: serde_json::json!({ "program": target.program, "cwd": target.cwd }),
+                    entry_function: (start == DebugStart::Entry).then_some(target.entry.clone()).flatten(),
+                    breakpoints,
+                    temporary,
+                }
+            }
+            _ => {
+                let Some(python) = dap::debugpy_python(&root) else {
+                    self.status = "Debugging Python needs debugpy (see Options > Dependencies)".into();
+                    return Task::none();
+                };
+                let script = target.args.first().cloned().unwrap_or_else(|| path.to_string_lossy().into_owned());
+                dap::Launch {
+                    adapter: dap::Adapter::Debugpy,
+                    command: vec![python.to_string_lossy().into_owned(), "-m".into(), "debugpy.adapter".into()],
+                    arguments: serde_json::json!({
+                        "program": script,
+                        "cwd": target.cwd,
+                        "console": "internalConsole",
+                        "justMyCode": true,
+                        "python": python,
+                        "stopOnEntry": start == DebugStart::Entry,
+                    }),
+                    entry_function: None,
+                    breakpoints,
+                    temporary,
+                }
+            }
+        };
+
+        self.output.screen.clear();
+        self.output.title = format!("{} (debugging)", path.file_name().unwrap_or_default().to_string_lossy());
+        self.output.running = true;
+        self.output.handle = None;
+        self.debug = Some(DebugSession::default());
+        self.debug_run_id += 1;
+        self.status = "Debugging... (F7/F8 step, F5 continue, Ctrl+F2 stop)".into();
+        let run_id = self.debug_run_id;
+        Task::run(dap::run(launch), move |event| Message::Debug(run_id, event))
+    }
+
+    fn debug_event(&mut self, event: dap::Event) -> Task<Message> {
+        match event {
+            dap::Event::Started(handle) => {
+                if let Some(debug) = &mut self.debug {
+                    debug.handle = Some(handle);
+                }
+            }
+            dap::Event::Stopped { frames, locals, .. } => {
+                let top = frames.first().cloned();
+                if let Some(debug) = &mut self.debug {
+                    debug.frames = frames;
+                    debug.locals = locals;
+                    debug.stopped_at = None;
+                }
+                let Some(top) = top else {
+                    self.status = "Stopped (no source here)".into();
+                    return Task::none();
+                };
+                if let Some(file) = &top.file
+                    && !self.is_current_file(file)
+                {
+                    if self.modified {
+                        self.status = format!("Stopped in {} (save this file to follow)", file.display());
+                        return Task::none();
+                    }
+                    self.load(file);
+                }
+                let line = top.line.saturating_sub(1);
+                self.place_clamped(line, 0);
+                let text = self.content.line(line).map(|l| l.text.into_owned()).unwrap_or_default();
+                self.place_clamped(line, text.len() - text.trim_start().len());
+                if let (Some(debug), Some(path)) = (&mut self.debug, self.path.clone()) {
+                    debug.stopped_at = Some((path, line));
+                }
+                self.status = format!("Stopped at line {} in {}", top.line, top.name);
+                for (expression, _) in self.watches.clone() {
+                    self.debug_command(dap::Command::Evaluate { expression });
+                }
+                return iced::widget::operation::focus(EDITOR);
+            }
+            dap::Event::Running => {
+                if let Some(debug) = &mut self.debug {
+                    debug.stopped_at = None;
+                }
+                self.status = "Running... (Ctrl+F2 to stop)".into();
+            }
+            dap::Event::Output(text) => output::append(&mut self.output.screen, &text),
+            dap::Event::Evaluated { expression, value } => {
+                if let Some(watch) = self.watches.iter_mut().find(|(e, _)| *e == expression) {
+                    watch.1 = value;
+                }
+            }
+            dap::Event::Exited(code) => {
+                let code = code.map_or("stopped".to_string(), |c| format!("exit code {c}"));
+                output::append(&mut self.output.screen, &format!("\n[Program finished, {code}]\n"));
+                self.status = format!("Program finished, {code} (Alt+F5 shows its output)");
+            }
+            dap::Event::Failed(error) => self.status = format!("Debugger: {error}"),
+            dap::Event::Ended => {
+                self.debug = None;
+                self.output.running = false;
+                if self.status.starts_with("Running") || self.status.starts_with("Debugging") {
+                    self.status = "Debugging ended".into();
+                }
+            }
+        }
+        Task::none()
+    }
+
+    /// Diagnostics, breakpoints, the execution line and search highlights.
+    fn editor_marks(&self) -> Arc<Vec<Mark>> {
+        let breakpoints = self.path.as_ref().and_then(|p| self.breakpoints.get(p));
+        let exec = self
+            .debug
+            .as_ref()
+            .and_then(|d| d.stopped_at.as_ref())
+            .filter(|(file, _)| self.path.as_ref() == Some(file))
+            .map(|(_, line)| *line);
+        if breakpoints.is_none() && exec.is_none() && self.search_marks.is_empty() {
+            return self.marks.clone();
+        }
+        let whole = |line: usize, kind| Mark { line, start: 0, end: usize::MAX / 2, kind };
+        let mut marks: Vec<Mark> = breakpoints
+            .into_iter()
+            .flatten()
+            .map(|&line| whole(line, MarkKind::Breakpoint))
+            .collect();
+        marks.extend(self.marks.iter().cloned());
+        marks.extend(exec.map(|line| whole(line, MarkKind::ExecLine)));
+        marks.extend(self.search_marks.iter().cloned());
+        Arc::new(marks)
+    }
+
+    /// Watches, locals and the call stack, shown while debugging.
+    fn debug_panel(&self) -> Element<'_, Message> {
+        let header = |title: &str| text(format!(" {title}")).color(Color::WHITE);
+        let line = |left: String, right: String| {
+            row![text(left).color(Color::BLACK).width(Length::FillPortion(2)), text(right).color(TURBO_BLUE).width(Length::FillPortion(3))]
+                .spacing(6)
+        };
+        let watches = column(
+            self.watches
+                .iter()
+                .map(|(expr, value)| line(expr.clone(), value.clone()).into())
+                .collect::<Vec<Element<'_, Message>>>(),
+        );
+        let (locals, frames) = match &self.debug {
+            Some(debug) => (
+                column(
+                    debug
+                        .locals
+                        .iter()
+                        .map(|v| line(v.name.clone(), truncate(&v.value, 60)).into())
+                        .collect::<Vec<Element<'_, Message>>>(),
+                ),
+                column(
+                    debug
+                        .frames
+                        .iter()
+                        .map(|f| {
+                            let file = f.file.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+                            let place = file.map(|n| format!("{n}:{}", f.line)).unwrap_or_default();
+                            text(format!("{}  {place}", truncate(&f.name, 40))).color(Color::BLACK).into()
+                        })
+                        .collect::<Vec<Element<'_, Message>>>(),
+                ),
+            ),
+            None => (column![text(" (not running)").color(TURBO_DARK_GRAY)], column![]),
+        };
+        let section = |title: &str, body: iced::widget::Column<'static, Message>| {
+            column![header(title), scrollable(body.padding([0, 6])).height(Length::Fill)].width(Length::Fill)
+        };
+        container(
+            row![
+                section("Watches  (Ctrl+F7 add)", watches),
+                section("Locals", locals),
+                section("Call stack", frames),
+            ]
+            .spacing(4),
+        )
+        .height(MESSAGES_HEIGHT)
+        .width(Length::Fill)
+        .style(|_| container::Style::default().background(TURBO_CYAN))
+        .into()
+    }
+
     // ----- Keyboard navigation -----
 
     fn open_menu(&mut self, menu: Menu) -> Task<Message> {
@@ -1136,6 +1511,7 @@ impl Ide {
         let selected = self.content.selection().filter(|s| !s.contains('\n') && !s.is_empty());
         let query = match mode {
             SearchMode::GoTo => String::new(),
+            SearchMode::Watch => selected.unwrap_or_default(),
             _ => selected.unwrap_or_else(|| self.last_query.clone()),
         };
         let replacement = self.search.as_ref().map(|b| b.replacement.clone()).unwrap_or_default();
@@ -1149,7 +1525,7 @@ impl Ide {
     fn close_search(&mut self) -> Task<Message> {
         // Remember what was typed, so Search again (Ctrl+L) uses it.
         if let Some(bar) = self.search.take()
-            && bar.mode != SearchMode::GoTo
+            && matches!(bar.mode, SearchMode::Find | SearchMode::Replace)
             && !bar.query.is_empty()
         {
             self.last_query = bar.query;
@@ -1162,7 +1538,7 @@ impl Ide {
     /// The text to search for: the open bar's, or the last one (Ctrl+L).
     fn search_query(&mut self) -> Option<(String, bool)> {
         if let Some(bar) = &self.search
-            && bar.mode != SearchMode::GoTo
+            && matches!(bar.mode, SearchMode::Find | SearchMode::Replace)
         {
             self.last_query = bar.query.clone();
             self.last_case = bar.case;
@@ -1259,7 +1635,7 @@ impl Ide {
     /// Re-marks the open bar's matches after the text or query changed.
     fn refresh_search_marks(&mut self) {
         let Some(bar) = &self.search else { return };
-        if bar.mode == SearchMode::GoTo || bar.query.is_empty() {
+        if matches!(bar.mode, SearchMode::GoTo | SearchMode::Watch) || bar.query.is_empty() {
             self.search_marks = Arc::default();
             return;
         }
@@ -1307,6 +1683,17 @@ impl Ide {
 
         let close = small_button("Close", Some(Message::CloseSearch));
         let rows: Element<'a, Message> = match bar.mode {
+            SearchMode::Watch => row![
+                label(" Add watch:"),
+                input(&bar.query, Message::SearchQuery, Message::AddWatch, 300.0).id(SEARCH_INPUT),
+                small_button("Add", Some(Message::AddWatch)),
+                text("an expression, evaluated at each stop").color(TURBO_DARK_GRAY),
+                Space::new().width(Length::Fill),
+                close,
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into(),
             SearchMode::GoTo => row![
                 label(" Go to line:"),
                 input(&bar.query, Message::SearchQuery, Message::GoToLine, 100.0).id(SEARCH_INPUT),
@@ -1490,6 +1877,7 @@ impl Ide {
                 };
                 Task::none()
             }
+            AfterSave::Debug(start) => self.start_debug(target, start),
             AfterSave::Nothing | AfterSave::Compile => Task::none(),
         }
     }
@@ -1745,12 +2133,7 @@ impl Ide {
             .highlight_with::<highlight::Highlighter>(
                 highlight::Settings {
                     lang: Lang::from_path(self.path.as_deref()),
-                    marks: if self.search_marks.is_empty() {
-                        self.marks.clone()
-                    } else {
-                        // Search highlights are drawn over diagnostics.
-                        Arc::new(self.marks.iter().chain(self.search_marks.iter()).cloned().collect())
-                    },
+                    marks: self.editor_marks(),
                 },
                 highlight::to_format,
             )
@@ -1793,7 +2176,9 @@ impl Ide {
             layout = layout.push(self.search_bar(bar));
         }
         layout = layout.push(editor);
-        if !panel.is_empty() {
+        if self.debug.is_some() || !self.watches.is_empty() {
+            layout = layout.push(self.debug_panel());
+        } else if !panel.is_empty() {
             layout = layout.push(self.messages_panel(panel));
         }
         layout = layout.push(self.status_bar());
@@ -2117,6 +2502,13 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
         Key::Named(key::Named::F1) => Some(Message::ToggleHelp),
         Key::Named(key::Named::F10) => Some(Message::OpenMenu(Menu::File)),
         Key::Named(key::Named::F7) if modifiers.alt() => Some(Message::PrevMessage),
+        Key::Named(key::Named::F7) if modifiers.control() => Some(Message::OpenSearch(SearchMode::Watch)),
+        Key::Named(key::Named::F7) => Some(Message::DebugStep(Step::Into)),
+        Key::Named(key::Named::F8) if modifiers.control() => Some(Message::ToggleBreakpoint),
+        Key::Named(key::Named::F8) if modifiers.shift() => Some(Message::DebugStep(Step::Out)),
+        Key::Named(key::Named::F8) if !modifiers.alt() => Some(Message::DebugStep(Step::Over)),
+        Key::Named(key::Named::F4) => Some(Message::GoToCursor),
+        Key::Named(key::Named::F5) if modifiers.shift() => Some(Message::DebugRun),
         Key::Named(key::Named::F8) if modifiers.alt() => Some(Message::NextMessage),
         Key::Named(key::Named::F9) if modifiers.alt() => Some(Message::Compile),
         Key::Named(key::Named::F2) if modifiers.control() => Some(Message::OutputStop),
@@ -2555,5 +2947,102 @@ mod keyboard_tests {
         assert!(indented.ends_with('x') && indented.len() > 1, "{indented:?}");
         send(&mut ide, [Message::Edit(Action::Edit(Edit::Unindent))]);
         assert_eq!(ide.content.text(), "x");
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    fn ide_with_file(name: &str, text: &str) -> (Ide, PathBuf) {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("debug-ui-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        let mut ide = Ide::default();
+        ide.load(&path);
+        (ide, path)
+    }
+
+    fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
+        for message in messages {
+            let _ = ide.update(message);
+        }
+    }
+
+    fn kinds(ide: &Ide) -> Vec<(usize, MarkKind)> {
+        ide.editor_marks().iter().map(|m| (m.line, m.kind)).collect()
+    }
+
+    #[test]
+    fn breakpoints_toggle_and_show() {
+        let (mut ide, path) = ide_with_file("bp.rs", "fn main() {\n    let x = 1;\n}\n");
+        vim::place(&mut ide.content, Position { line: 1, column: 0 });
+        send(&mut ide, [Message::ToggleBreakpoint]);
+        assert_eq!(ide.breakpoints.get(&path).map(|s| s.iter().copied().collect::<Vec<_>>()), Some(vec![1]));
+        assert_eq!(kinds(&ide), [(1, MarkKind::Breakpoint)]);
+        send(&mut ide, [Message::ToggleBreakpoint]);
+        assert!(ide.breakpoints.is_empty());
+
+        let mut unsaved = Ide::default();
+        send(&mut unsaved, [Message::ToggleBreakpoint]);
+        assert!(unsaved.status.starts_with("Save the file first"));
+    }
+
+    #[test]
+    fn stop_events_move_the_cursor_and_fill_the_panel() {
+        let (mut ide, path) = ide_with_file("stop.rs", "fn main() {\n    let x = 41;\n    let y = x + 1;\n}\n");
+        ide.debug = Some(DebugSession::default());
+        let frame = dap::Frame { name: "stop::main".into(), file: Some(path.clone()), line: 3 };
+        let local = dap::Variable { name: "x".into(), value: "41".into() };
+        send(&mut ide, [Message::Debug(0, dap::Event::Stopped { frames: vec![frame], locals: vec![local] })]);
+        assert_eq!(ide.content.cursor().position, Position { line: 2, column: 4 }, "first non-blank of line 3");
+        assert!(kinds(&ide).contains(&(2, MarkKind::ExecLine)));
+        assert_eq!(ide.status, "Stopped at line 3 in stop::main");
+        let _ = ide.debug_panel(); // builds without panicking
+
+        send(&mut ide, [
+            Message::OpenSearch(SearchMode::Watch),
+            Message::SearchQuery("x + 1".into()),
+            Message::AddWatch,
+        ]);
+        assert_eq!(ide.watches, [("x + 1".to_string(), String::new())]);
+        assert!(ide.search.is_none());
+        send(&mut ide, [Message::Debug(0, dap::Event::Evaluated { expression: "x + 1".into(), value: "42".into() })]);
+        assert_eq!(ide.watches[0].1, "42");
+
+        send(&mut ide, [Message::Debug(0, dap::Event::Running)]);
+        assert!(!kinds(&ide).contains(&(2, MarkKind::ExecLine)), "no execution line while running");
+        send(&mut ide, [Message::Debug(0, dap::Event::Exited(Some(0))), Message::Debug(0, dap::Event::Ended)]);
+        assert!(ide.debug.is_none());
+        assert!(ide.output.screen.contains("exit code 0"));
+
+        send(&mut ide, [Message::Debug(7, dap::Event::Ended)]);
+        assert!(ide.debug.is_none(), "events from an old session are ignored");
+    }
+
+    #[test]
+    fn debug_keys() {
+        let none = Modifiers::empty();
+        let physical = key::Physical::Unidentified(key::NativeCode::Unidentified);
+        let f = |n| Key::Named(n);
+        let map = |k, m| shortcut(&f(k), physical, m);
+        assert!(matches!(map(key::Named::F7, none), Some(Message::DebugStep(Step::Into))));
+        assert!(matches!(map(key::Named::F8, none), Some(Message::DebugStep(Step::Over))));
+        assert!(matches!(map(key::Named::F8, Modifiers::SHIFT), Some(Message::DebugStep(Step::Out))));
+        assert!(matches!(map(key::Named::F8, Modifiers::CTRL), Some(Message::ToggleBreakpoint)));
+        assert!(matches!(map(key::Named::F8, Modifiers::ALT), Some(Message::NextMessage)));
+        assert!(matches!(map(key::Named::F7, Modifiers::CTRL), Some(Message::OpenSearch(SearchMode::Watch))));
+        assert!(matches!(map(key::Named::F4, none), Some(Message::GoToCursor)));
+        assert!(matches!(map(key::Named::F5, Modifiers::SHIFT), Some(Message::DebugRun)));
+        assert!(matches!(map(key::Named::F5, none), Some(Message::Run)));
+    }
+
+    #[test]
+    fn run_continues_while_debugging() {
+        let (mut ide, _) = ide_with_file("cont.py", "print(1)\n");
+        ide.debug = Some(DebugSession::default());
+        send(&mut ide, [Message::Run]);
+        assert!(!ide.building, "F5 continues the session instead of rebuilding");
     }
 }

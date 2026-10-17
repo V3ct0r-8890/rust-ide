@@ -34,8 +34,8 @@ if (-not (Have python)) { Winget "Python.Python.3.13"; Refresh-Path }
 # Language servers for live errors and completion
 Write-Host "==> rustup component add rust-analyzer" -ForegroundColor Cyan
 rustup component add rust-analyzer
-Write-Host "==> pip install --user basedpyright" -ForegroundColor Cyan
-python -m pip install --user basedpyright
+Write-Host "==> pip install --user basedpyright debugpy" -ForegroundColor Cyan
+python -m pip install --user basedpyright debugpy
 
 Write-Host ""
 Write-Host "Done. Open a new terminal (so PATH is refreshed) and start rust-ide.exe." -ForegroundColor Green

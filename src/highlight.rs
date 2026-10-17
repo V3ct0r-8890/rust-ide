@@ -42,6 +42,10 @@ pub enum MarkKind {
     Match,
     /// The current search match.
     Current,
+    /// A line with a breakpoint.
+    Breakpoint,
+    /// The line the debugger stopped at.
+    ExecLine,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +66,8 @@ pub enum Highlight {
     Warning,
     Match,
     Current,
+    Breakpoint,
+    ExecLine,
 }
 
 pub fn to_format(highlight: &Highlight, _theme: &Theme) -> Format<Font> {
@@ -76,6 +82,8 @@ pub fn to_format(highlight: &Highlight, _theme: &Theme) -> Format<Font> {
         Highlight::Warning => Color::from_rgb(1.0, 0.33, 1.0),
         Highlight::Match => Color::from_rgb(1.0, 0.5, 0.0),
         Highlight::Current => Color::WHITE,
+        Highlight::Breakpoint => Color::from_rgb(1.0, 0.55, 0.55),
+        Highlight::ExecLine => Color::from_rgb(0.35, 1.0, 0.35),
     };
     // Color only: a bold face can have a different width and would break
     // the column alignment of the code.
@@ -171,6 +179,8 @@ fn apply_marks<'a>(
             MarkKind::Warning => Highlight::Warning,
             MarkKind::Match => Highlight::Match,
             MarkKind::Current => Highlight::Current,
+            MarkKind::Breakpoint => Highlight::Breakpoint,
+            MarkKind::ExecLine => Highlight::ExecLine,
         };
         styles[start..end].fill(Some(highlight));
     }

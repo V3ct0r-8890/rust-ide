@@ -14,10 +14,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y build-essential python3
+      - run: sudo apt-get update && sudo apt-get install -y build-essential python3 gdb python3-debugpy
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --locked
       - run: cargo test --locked
+      - name: Debugger tests (gdb and debugpy)
+        run: cargo test --locked dap:: -- --ignored --test-threads=1
 
   redhat:
     name: ${{ matrix.image }}

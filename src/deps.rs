@@ -146,6 +146,40 @@ pub fn check(os: Os) -> Vec<Dep> {
         auto,
     });
 
+    deps.push(Dep {
+        name: "gdb 14+",
+        purpose: "debugging Rust (F7/F8, breakpoints)",
+        need: Need::Recommended,
+        found: crate::dap::find_gdb().map(|(_, version)| version),
+        install: match os {
+            Os::Windows => "winget install BrechtSanders.WinLibs.POSIX.MSVCRT".into(),
+            Os::Debian => "sudo apt install gdb".into(),
+            // RHEL 9's own gdb is too old for DAP; gcc-toolset has a newer one.
+            Os::RedHat => "sudo dnf install gdb   (RHEL 9: sudo dnf install gcc-toolset-14-gdb)".into(),
+            _ => "install gdb 14 or newer with your package manager".into(),
+        },
+        auto: (os == Os::Windows).then(|| {
+            words("winget install --id BrechtSanders.WinLibs.POSIX.MSVCRT -e --accept-source-agreements --accept-package-agreements")
+        }),
+    });
+
+    let (install, auto) = match os {
+        // pip --user is blocked for the system Python on Ubuntu (PEP 668).
+        Os::Debian => ("sudo apt install python3-debugpy".to_string(), None),
+        _ => {
+            let command = format!("{python} -m pip install --user debugpy");
+            (command.clone(), Some(words(&command)))
+        }
+    };
+    deps.push(Dep {
+        name: "debugpy",
+        purpose: "debugging Python (F7/F8, breakpoints)",
+        need: Need::Recommended,
+        found: crate::dap::debugpy_python(&here).map(|p| p.display().to_string()),
+        install,
+        auto,
+    });
+
     if os != Os::Windows {
         let portal = ["/usr/libexec/xdg-desktop-portal", "/usr/lib/xdg-desktop-portal"]
             .iter()

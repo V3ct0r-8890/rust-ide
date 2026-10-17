@@ -230,6 +230,7 @@ mod tests {
             args: vec![script.to_string_lossy().into_owned()],
             cwd: dir,
             gui: false,
+            entry: None,
         };
 
         let events = iced::futures::executor::block_on_stream(Box::pin(run(target)));

@@ -456,6 +456,11 @@ fn venv_dir(root: &Path) -> Option<PathBuf> {
         .find(|venv| venv.join(PYTHON_EXE).is_file())
 }
 
+/// The Python interpreter of the project's virtual environment, if any.
+pub fn venv_python(root: &Path) -> Option<PathBuf> {
+    venv_dir(root).map(|venv| venv.join(PYTHON_EXE))
+}
+
 /// Python's per-user scripts directory (asked once; spawning Python is slow).
 fn python_user_scripts() -> Option<PathBuf> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
@@ -472,6 +477,12 @@ fn python_user_scripts() -> Option<PathBuf> {
 /// The directory a language server should treat as the workspace.
 fn project_root(lang: Lang, file: &Path) -> PathBuf {
     let dir = file.parent().unwrap_or(Path::new(".")).to_path_buf();
+    if lang == Lang::Rust {
+        // Same rule as the build: only files in a package's source folders.
+        return crate::runner::find_cargo_manifest(file)
+            .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
+            .unwrap_or(dir);
+    }
     let markers: &[&str] = match lang {
         Lang::Rust => &["Cargo.toml"],
         _ => &["pyproject.toml", "setup.py", ".venv"],
@@ -486,13 +497,13 @@ fn notification(method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "method": method, "params": params })
 }
 
-fn write_message(stdin: &mut ChildStdin, message: &Value) -> std::io::Result<()> {
+pub fn write_message(stdin: &mut impl Write, message: &Value) -> std::io::Result<()> {
     let body = message.to_string();
     write!(stdin, "Content-Length: {}\r\n\r\n{body}", body.len())?;
     stdin.flush()
 }
 
-fn read_message(reader: &mut impl BufRead) -> Option<Value> {
+pub fn read_message(reader: &mut impl BufRead) -> Option<Value> {
     let mut length = None;
     loop {
         let mut header = String::new();

@@ -41,6 +41,8 @@ pub struct RunTarget {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub gui: bool,
+    /// The Rust function the debugger stops in first (`crate::main`).
+    pub entry: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,11 +124,19 @@ fn tool(name: &str) -> Command {
     platform::hidden_command(platform::find_program(name).unwrap_or_else(|| PathBuf::from(name)))
 }
 
-fn find_cargo_manifest(file: &Path) -> Option<PathBuf> {
-    file.ancestors()
-        .skip(1)
-        .map(|dir| dir.join("Cargo.toml"))
-        .find(|manifest| manifest.is_file())
+/// The `Cargo.toml` of the package this file belongs to. Only files in the
+/// package's source folders count: a loose `.rs` file elsewhere under a
+/// project (in `target/`, `docs/`, ...) is compiled on its own.
+pub fn find_cargo_manifest(file: &Path) -> Option<PathBuf> {
+    file.ancestors().skip(1).find_map(|dir| {
+        let manifest = dir.join("Cargo.toml");
+        if !manifest.is_file() {
+            return None;
+        }
+        let first = file.strip_prefix(dir).ok()?.components().next()?;
+        let first = first.as_os_str().to_str()?;
+        ["src", "examples", "tests", "benches", "build.rs"].contains(&first).then_some(manifest)
+    })
 }
 
 fn build_cargo(manifest: &Path) -> BuildResult {
@@ -142,6 +152,7 @@ fn build_cargo(manifest: &Path) -> BuildResult {
 
     let mut diagnostics = Vec::new();
     let mut executable = None;
+    let mut entry = None;
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let Ok(json) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -153,6 +164,7 @@ fn build_cargo(manifest: &Path) -> BuildResult {
             Some("compiler-artifact") => {
                 if let Some(exe) = json["executable"].as_str() {
                     executable = Some(PathBuf::from(exe));
+                    entry = json["target"]["name"].as_str().map(|name| format!("{}::main", name.replace('-', "_")));
                 }
             }
             _ => {}
@@ -183,6 +195,7 @@ fn build_cargo(manifest: &Path) -> BuildResult {
             args: Vec::new(),
             cwd: dir.to_path_buf(),
             gui,
+            entry,
         }),
     }
 }
@@ -195,7 +208,7 @@ fn build_rustc(file: &Path) -> BuildResult {
     let exe = out_dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
 
     let output = match tool("rustc")
-        .args(["--edition", "2024", "--error-format=json"])
+        .args(["--edition", "2024", "--error-format=json", "-g"]) // -g: debug info for the debugger
         .arg(file)
         .arg("-o")
         .arg(&exe)
@@ -226,6 +239,7 @@ fn build_rustc(file: &Path) -> BuildResult {
             args: Vec::new(),
             cwd: dir,
             gui,
+            entry: Some(format!("{}::main", stem.replace('-', "_"))),
         }),
     }
 }
@@ -286,6 +300,7 @@ fn check_python(file: &Path) -> BuildResult {
                 args: vec![file.to_string_lossy().into_owned()],
                 cwd: dir,
                 gui,
+                entry: None,
             }),
         };
     }
@@ -317,6 +332,19 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, source).unwrap();
         path
+    }
+
+    #[test]
+    fn only_source_folders_belong_to_a_cargo_project() {
+        let root = std::env::temp_dir().join("rust-ide-tests").join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]
+name = \"p\"
+").unwrap();
+        assert!(find_cargo_manifest(&root.join("src").join("main.rs")).is_some());
+        assert!(find_cargo_manifest(&root.join("examples").join("demo.rs")).is_some());
+        assert!(find_cargo_manifest(&root.join("target").join("e2e").join("x.rs")).is_none());
+        assert!(find_cargo_manifest(&root.join("notes.rs")).is_none());
     }
 
     #[test]

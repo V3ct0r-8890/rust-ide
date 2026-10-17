@@ -45,6 +45,11 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | Alt+M | Match case on/off in the search bar (Tab moves between its fields) |
 | Alt+F8 / Alt+F7 | Next / previous error in the Messages panel |
 | Tab / Shift+Tab | Indent / unindent |
+| Ctrl+F8 | Toggle breakpoint on the cursor line |
+| F7 / F8 | Debugger: trace into / step over (starts at the first line); Shift+F8 steps out |
+| F4 | Go to cursor (run to the cursor line) |
+| Shift+F5 | Debug run to the next breakpoint; F5 / Ctrl+F9 continue while debugging |
+| Ctrl+F7 | Add a watch expression |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
 The Output window shows the program's output and has an input line for programs that read
@@ -83,11 +88,11 @@ To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging
 
 ## Status
 
-Done: editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
+Done: debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
 and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
 Windows and Linux packages.
 
-Next: debugger (F7/F8, breakpoints, Watch), several open files, TUI front end,
+Next: several open files, TUI front end,
 new-project templates (Simple / Low / Medium / Complex for Rust and Python).
 
 See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limitations.

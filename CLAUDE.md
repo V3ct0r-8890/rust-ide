@@ -31,8 +31,10 @@ Modules in `src/`: `main.rs` (UI, messages), `runner.rs` (build/check/run), `out
 - Windows blocks focus stealing, so `SendKeys` is unreliable and could type into the user's
   other windows. Instead, post `WM_KEYDOWN`/`WM_KEYUP` (with scan codes from `MapVirtualKey`)
   to the IDE's window handle, and capture it with `PrintWindow`.
-- Synthetic keys have limits: repeated identical keys are dropped, and Alt state is not seen
-  (Alt+F5 arrives as F5). Prefer unit tests for logic, and synthetic keys for wiring only.
+- Synthetic keys have limits: repeated identical keys are dropped, and Alt/Ctrl state is not
+  seen (Alt+F5 arrives as F5). Plain keys (F1-F12, arrows, letters) work. Synthetic mouse clicks
+  are unreliable. Prefer headless tests that call `Ide::update` with messages (see the `tests`,
+  `keyboard_tests` and `debug_tests` modules in `main.rs`).
 - Ask the user before any test that opens windows if they might be using the machine.
 
 ## Rules learned the hard way
@@ -44,6 +46,12 @@ Modules in `src/`: `main.rs` (UI, messages), `runner.rs` (build/check/run), `out
 - **Positioning the cursor:** `Content::move_to` with `selection: None` keeps an old selection,
   and a Move with any selection only collapses it. Use `vim::place(content, position)`.
 - Status bar text must be clipped, never allowed to push the right-hand fields off screen.
+- **Debugger:** `src/dap.rs` drives `gdb -i dap` (Rust, needs gdb 14+) and debugpy. gdb's built-in
+  Python breaks when `MSYSTEM` (Git Bash/MSYS2), `PYTHONHOME` or `PYTHONPATH` are set, so they
+  are removed for gdb. Live tests: `cargo test dap:: -- --ignored --test-threads=1`
+  (parallel gdb sessions disturb each other). `DAP_TRACE=1` prints adapter commands and stderr.
+- A `.rs` file belongs to a Cargo project only if it is in the package's `src/`, `examples/`,
+  `tests/` or `benches/` (`runner::find_cargo_manifest`); loose files build alone with rustc.
 
 ## Releases
 

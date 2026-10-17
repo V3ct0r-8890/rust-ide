@@ -11,6 +11,8 @@ This page lists the same steps for each supported system.
 | C compiler / linker (`cc`) | linking Rust programs (Linux) | required on Linux |
 | Python 3 | checking and running Python | required for Python |
 | rust-analyzer | live Rust errors and completion | recommended |
+| gdb 14 or newer | debugging Rust (F7/F8, breakpoints) | recommended |
+| debugpy | debugging Python | recommended |
 | basedpyright (or pyright) | live Python errors and completion | recommended |
 | xdg-desktop-portal | Open / Save dialogs (Linux) | recommended on Linux |
 | a terminal emulator | *Run > Run in external terminal* (Linux) | optional |
@@ -47,8 +49,10 @@ winget install Python.Python.3.13
 
 # Language servers
 rustup component add rust-analyzer
-python -m pip install --user basedpyright
+python -m pip install --user basedpyright debugpy
 ```
+
+gdb comes with the MinGW-w64 (WinLibs) package above.
 
 Open a new terminal afterwards so the updated `PATH` is picked up.
 
@@ -57,7 +61,7 @@ Open a new terminal afterwards so the updated `PATH` is picked up.
 ```bash
 # C compiler/linker, Python, file dialogs, pipx
 sudo apt update
-sudo apt install build-essential python3 pipx xdg-desktop-portal xdg-desktop-portal-gtk
+sudo apt install build-essential python3 pipx xdg-desktop-portal xdg-desktop-portal-gtk gdb python3-debugpy
 
 # Rust (the apt rustc is too old for current crates; use rustup)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -77,7 +81,7 @@ it inside a project's `.venv`.
 
 ```bash
 # C compiler/linker, Python, file dialogs
-sudo dnf install gcc python3 python3-pip xdg-desktop-portal xdg-desktop-portal-gtk
+sudo dnf install gcc python3 python3-pip xdg-desktop-portal xdg-desktop-portal-gtk gdb
 
 # Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -85,8 +89,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Language servers
 rustup component add rust-analyzer
-python3 -m pip install --user basedpyright
+python3 -m pip install --user basedpyright debugpy
 ```
+
+The debugger needs gdb 14 or newer. RHEL 9 ships gdb 10; install a newer one with
+`sudo dnf install gcc-toolset-14-gdb` (rust-ide finds it in `/opt/rh/`).
 
 On KDE desktops, `xdg-desktop-portal-kde` can replace `xdg-desktop-portal-gtk`.
 
