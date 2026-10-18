@@ -17,7 +17,7 @@ Last updated: 2026-10-20. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 | New files | Started without a file, the IDE (both versions) asks which language to use: Rust, Python, or Text / Markdown for anything else; File > New asks too. The last choice is remembered and preselected; the type sets highlighting, the `NONAME.xx` name and the Save As default; `.txt` and `.md` open as plain files |
 | New project | **File > New project...** (Alt+F P, both versions): Rust or Python, size Simple / Low / Medium / Complex, a name and a folder; writes the project and opens its main file. All 8 templates are built, run and tested by `cargo test templates:: -- --ignored` (run in CI) |
 | Terminal: Replace, mouse, Options | `rust-ide-tui` (0.2.12): Replace all (Ctrl+H / Ctrl+R, one undo), mouse (menus, tabs, cursor, wheel; `--no-mouse` turns it off), Options > Check before run, Options > Line numbers (0.2.13) |
-| Settings dialog | Window version: **Options > Settings...** (Alt+O E) - preview place, window style, Vim mode, check before run, font size, dependencies; keyboard (Up/Down, Left/Right, Enter, letters, Esc) and mouse; changes apply and are remembered at once. The terminal version has no Options menu yet (backlog item 2) |
+| Settings dialog | Window version: **Options > Settings...** (Alt+O E) - preview place, window style, Vim mode, check before run, font size, dependencies; keyboard (Up/Down, Left/Right, Enter, letters, Esc) and mouse; changes apply and are remembered at once. The terminal version has no Options menu yet (backlog item 3) |
 | Font size | Window version: **Ctrl+=** larger, **Ctrl+-** smaller, **Ctrl+0** default (also Options menu, Alt+O B / S / R); 10 to 32 points, remembered (`font_size` in the settings file). Applies to the editor (with the block cursor), the Markdown preview and the user screen; menus and panels keep their size. The terminal version uses the terminal's own zoom |
 | Syntax check | Compile > Syntax check, **Alt+F9** (GUI and terminal version): finds errors without building or running - `cargo check` for projects, `rustc --emit=metadata` for single Rust files, the syntax parse for Python; errors go to the Messages panel and the cursor jumps to the first. Options > Check before run (GUI) makes F9 / F5 run it first and stop on errors |
 | Debugger | Debug menu with Turbo Pascal keys: Ctrl+F8 breakpoint, F7 trace into, F8 step over, Shift+F8 step out, F4 go to cursor, Shift+F5 debug run, Ctrl+F7 watch, Ctrl+F2 reset. Rust through `gdb -i dap` (gdb 14+), Python through debugpy. Breakpoints and the execution line are colored in the editor; the debug panel shows watches, arguments and locals, and the call stack |
@@ -35,11 +35,38 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 
 | # | Item | Effort |
 |---|---|---|
-| 1 | Line numbers in the window version | M |
-| 2 | Terminal version: the rest | L |
-| 3 | C# support | L |
+| 1 | Development environments for project sessions (**next**) | L |
+| 2 | Line numbers in the window version | M |
+| 3 | Terminal version: the rest | L |
+| 4 | C# support | L |
 
-### 1. Line numbers in the window version - M
+### 1. Development environments for project sessions - L (do this next)
+Set up and remember a custom environment per project, so a project always builds and runs with
+the tools and settings chosen for it, without touching the machine-wide setup. **The details
+below are proposals; each part is confirmed with you before it is built.**
+- **Per-project environment** stored with the project (e.g. `.rust-ide/env.toml`): toolchain,
+  Python interpreter / virtual environment, environment variables, extra PATH entries, working
+  directory and run arguments. Opened automatically with the project folder or File > Open.
+- **Python:** create and select a `.venv` per project (Options > Environment...), install the
+  project's requirements (`pip install -r` / `pip install -e ".[dev]"`), show the interpreter in
+  the status line, and use it for F5, pytest, the debugger and the language server.
+- **Rust:** choose the toolchain per project (`rust-toolchain.toml`, or the IDE's own setting) and
+  the target; show it in the status line.
+- **Managed tools (answer to "can we bundle Rust and Python?"):** do not put them inside the
+  installer (hundreds of MB, licence notices, always out of date). Instead, offer **"Set up
+  tools for the IDE"**, which downloads them on first use into the IDE's own folder, separate from
+  the system: Rust through `rustup` with `RUSTUP_HOME` / `CARGO_HOME` under the IDE's data folder
+  (minimal profile, about 300 MB; the Windows GNU target still needs a MinGW `gcc`, which would be
+  fetched too), and Python as a relocatable build (python-build-standalone, which includes `pip`
+  and `venv`; the python.org embeddable zip has neither). The Dependencies dialog already installs
+  user-level tools and would be extended to do this.
+- **Sessions:** the open windows, cursor positions, window style and the project's environment are
+  saved when the IDE closes and restored next time (per project folder).
+- **Both front ends** read the same environment file; the window version gets the dialog first.
+- To confirm: what "environment" should include (tools only, or also variables and run
+  configurations), where the files live, and whether the managed download should be opt-in.
+
+### 2. Line numbers in the window version - M
 - An **Options > Line numbers** toggle (also in the Settings dialog), remembered, like the one the
   terminal version has since 0.2.13.
 - The difficulty: iced 0.14's `text_editor` shows no gutter and reports no scroll position, so a
@@ -55,7 +82,7 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
   grows past 999 lines.
 - Confirm the option with you before building.
 
-### 2. Terminal version: the rest - L
+### 3. Terminal version: the rest - L
 Suggested sub-steps, easiest first:
 1. ~~Replace, mouse support and an Options menu~~ - done in 0.2.12 (Ctrl+H / Ctrl+R replace all, click menus / tabs / text, Options > Check before run). Still to do: a Settings dialog like the window version's, once there are more settings to put in it (Vim, ...).
 2. Vim mode (reuse `src/vim.rs`).
@@ -64,7 +91,7 @@ Suggested sub-steps, easiest first:
 4. The debugger (breakpoints, F7/F8, watches panel).
 5. Markdown preview: a small renderer built on the `pulldown-cmark` parser (headings, bold, lists, code blocks as styled text).
 
-### 3. C# support (open-source tools only) - L
+### 4. C# support (open-source tools only) - L
 - **Compiler:** the open-source .NET SDK command line (MIT licensed, Roslyn compiler), current
   LTS release. F9 runs `dotnet build`, F5 runs `dotnet run`; errors come from the build output
   (`file(line,col): error CS0103: ...`) into the Messages panel. A single `.cs` file without a
@@ -87,7 +114,7 @@ Suggested sub-steps, easiest first:
 
 ## Known limitations
 
-- **Line numbers** exist only in the terminal version; iced's text editor exposes no scroll position (backlog item 1).
+- **Line numbers** exist only in the terminal version; iced's text editor exposes no scroll position (backlog item 2).
 
 - **Markdown preview** shows images only as their description, does not follow `#heading` links, and does not color code blocks.
 - **Completion popup** sits in the bottom-right corner of the editor, not next to the cursor: the editor widget does not report the cursor's screen position.
