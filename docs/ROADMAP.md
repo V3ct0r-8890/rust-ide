@@ -87,6 +87,18 @@ In suggested order.
 - Optional setting **Check before compile/run** (Options menu): F9 and F5 run the syntax check
   first and stop on errors, so a slow build or a run never starts with broken code.
 
+### 7. Window style setting (GUI)
+- **Options > Window style** chooses how open files (buffer windows) are shown and selected:
+  - **Legacy (Turbo Pascal):** no tab strip. Windows are picked from the Window menu list
+    (Alt+0), with F6 / Shift+F6 and Alt+1-9, and the active window's number and name are shown
+    in a title line above the editor, like Turbo Pascal's numbered windows.
+  - **Horizontal tabs:** the current tab strip under the menu bar.
+  - **Vertical tabs:** a narrow list of open files on the left of the editor (number, name,
+    `*` for unsaved changes), clickable, with the active one highlighted.
+- The same keys work in every style; the choice is remembered in the settings file
+  (`window_style=legacy|horizontal|vertical`).
+- Later: a matching choice in the terminal version (legacy or horizontal tabs).
+
 ## Known limitations
 
 - **Completion popup** sits in the bottom-right corner of the editor, not next to the cursor: the editor widget does not report the cursor's screen position.
