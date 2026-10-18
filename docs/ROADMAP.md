@@ -44,9 +44,23 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 Set up and remember a custom environment per project, so a project always builds and runs with
 the tools and settings chosen for it, without touching the machine-wide setup. **The details
 below are proposals; each part is confirmed with you before it is built.**
-- **Per-project environment** stored with the project (e.g. `.rust-ide/env.toml`): toolchain,
-  Python interpreter / virtual environment, environment variables, extra PATH entries, working
-  directory and run arguments. Opened automatically with the project folder or File > Open.
+- **Two groups of environment settings**, kept apart:
+  1. **General (system-wide) environment**, for every project and session of the IDE: proxy
+     settings (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, cargo / pip proxy and certificate
+     settings), extra `PATH` entries, tool locations (`CARGO_HOME`, `RUSTUP_HOME`), mirrors and
+     registries. Edited in Options > Environment... and saved in the IDE's settings file. Applied
+     to everything the IDE starts: builds, runs, the debugger, language servers, installs and the
+     Dependencies checks.
+  2. **Project environment**, for one project folder: variables for the program (e.g. `DATABASE_URL`,
+     `RUST_LOG`), the Python interpreter / `.venv`, the Rust toolchain, working directory and run
+     arguments. Stored with the project (e.g. `.rust-ide/env.toml`, or a `.env` file the IDE
+     reads), so it can be committed or ignored per project. A project value overrides a general
+     one with the same name. The `.venv` holds the project's Python and packages; variables are
+     applied by the IDE itself when it starts the program (a venv's `activate` script only affects
+     shells), so they also work for Rust projects.
+  The dialog shows both groups and the final result for the current project (which value wins and
+  where it came from). Secrets (passwords, tokens) are never committed by the IDE: the project file
+  is added to `.gitignore` when it holds variables.
 - **Python:** create and select a `.venv` per project (Options > Environment...), install the
   project's requirements (`pip install -r` / `pip install -e ".[dev]"`), show the interpreter in
   the status line, and use it for F5, pytest, the debugger and the language server.
@@ -63,8 +77,9 @@ below are proposals; each part is confirmed with you before it is built.**
 - **Sessions:** the open windows, cursor positions, window style and the project's environment are
   saved when the IDE closes and restored next time (per project folder).
 - **Both front ends** read the same environment file; the window version gets the dialog first.
-- To confirm: what "environment" should include (tools only, or also variables and run
-  configurations), where the files live, and whether the managed download should be opt-in.
+- To confirm: the format and place of the project file (`.rust-ide/env.toml` or `.env`), whether
+  general variables may also be set per user vs per machine, and whether the managed download
+  should be opt-in.
 
 ### 2. Line numbers in the window version - M
 - An **Options > Line numbers** toggle (also in the Settings dialog), remembered, like the one the
