@@ -41,7 +41,12 @@ fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
     // Turbo Pascal's block cursor.
     let _ = execute!(io::stdout(), SetCursorStyle::SteadyBlock);
-    let result = run(&mut terminal, App::new(&files));
+    let mut app = App::new(&files);
+    // Started without a file: ask which language to use.
+    if files.is_empty() {
+        app.ask_language(true);
+    }
+    let result = run(&mut terminal, app);
     let _ = execute!(io::stdout(), SetCursorStyle::DefaultUserShape);
     ratatui::restore();
     result

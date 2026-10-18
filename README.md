@@ -56,6 +56,12 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | Alt+F3 | Close the window |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
+**Starting without a file** (no file name on the command line): the IDE asks which language to use: Rust (.rs),
+Python (.py), or, for any other language, Text (.txt) or Markdown (.md). Press R / P / T / M or 1-4 (or click), Enter takes
+the highlighted one (the one you chose last time), Esc gives a plain Rust window. **File > New** asks the same question.
+The choice decides the highlighting, the `NONAME` file name and what Save As offers. `.txt` and `.md` files open like
+any other file, without highlighting.
+
 The Output window shows the program's output and has an input line for programs that read
 from the keyboard. *Run > Run in external terminal* opens a separate terminal instead.
 

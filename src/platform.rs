@@ -342,6 +342,10 @@ fn shell_quote(s: &str) -> String {
 
 /// Per-user settings file (`key=value` lines).
 pub fn config_path() -> Option<PathBuf> {
+    // A fixed settings file, for tests and portable setups.
+    if let Some(file) = std::env::var_os("RUST_IDE_CONFIG_FILE") {
+        return Some(PathBuf::from(file));
+    }
     let base = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from)
     } else {

@@ -52,6 +52,9 @@ A Turbo Pascal-style IDE for Rust and Python, with two front ends over one libra
   (character columns) and LSP (UTF-16, handled in `lsp.rs`). Lines may contain Thai text.
 - **Positioning the cursor:** `Content::move_to` with `selection: None` keeps an old selection,
   and a Move with any selection only collapses it. Use `vim::place(content, position)`.
+- Settings live in one `key=value` file (`platform::config_path`). Tests that save settings must
+  point `RUST_IDE_CONFIG_FILE` at a temp file and take turns (see `isolate_settings()` in the
+  `language_tests` modules); never let a test write the real file.
 - Status bar text must be clipped, never allowed to push the right-hand fields off screen, so
   put the important words first.
 - **F9 compiles, Alt+F9 only checks** (`runner::check`: no program is produced; `main.rs`

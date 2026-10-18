@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rust_ide::runner::{BuildResult, Diagnostic, RunTarget};
+use rust_ide::filetype;
 use rust_ide::search;
 
 use crate::buffer::Buffer;
@@ -110,6 +111,8 @@ pub enum Mode {
     Prompt { kind: PromptKind, input: String },
     Open(OpenDialog),
     Help { scroll: usize },
+    /// "Choose a language" list (start-up and File > New).
+    Language { selected: usize, startup: bool },
 }
 
 /// F3: a Turbo-style file list of one directory.
@@ -172,7 +175,7 @@ impl App {
             windows: vec![Buffer::default()],
             active: 0,
             mode: Mode::Edit,
-            status: "F1 Help  F10 Menu".into(),
+            status: String::new(),
             messages: Vec::new(),
             message_index: None,
             last_query: String::new(),
@@ -253,6 +256,7 @@ impl App {
             Mode::Menu { .. } => self.menu_key(key),
             Mode::Prompt { .. } => self.prompt_key(key),
             Mode::Open(_) => self.open_key(key),
+            Mode::Language { .. } => self.language_key(key),
             Mode::Help { scroll } => {
                 match key.code {
                     KeyCode::Up => *scroll = scroll.saturating_sub(1),
@@ -389,12 +393,7 @@ impl App {
     pub fn act(&mut self, action: Action) -> Effect {
         let confirmed = self.confirm.take() == Some(action.clone());
         match action {
-            Action::New => {
-                if !self.buffer().is_blank() {
-                    self.new_window();
-                }
-                self.status = "New file".into();
-            }
+            Action::New => self.ask_language(false),
             Action::Open => {
                 let dir = self
                     .buffer()
@@ -479,7 +478,12 @@ impl App {
         match kind {
             PromptKind::SaveAs => {
                 if !input.trim().is_empty() {
-                    self.buffer_mut().path = Some(PathBuf::from(input.trim()));
+                    // A name typed without an extension gets the file's type.
+                    let ext = match self.buffer().path.as_deref().and_then(Path::extension) {
+                        Some(ext) => ext.to_string_lossy().into_owned(),
+                        None => self.buffer().ext.unwrap_or(filetype::DEFAULT_EXT).to_string(),
+                    };
+                    self.buffer_mut().path = Some(PathBuf::from(filetype::with_default_extension(input, &ext)));
                     self.save();
                 }
             }
@@ -524,6 +528,61 @@ impl App {
     }
 
     // ----- Windows -----
+
+    // ----- New file: choose a language -----
+
+    /// Opens the language list, starting on the type chosen last time.
+    pub fn ask_language(&mut self, startup: bool) {
+        self.mode = Mode::Language { selected: filetype::last_choice(), startup };
+    }
+
+    fn language_key(&mut self, key: KeyEvent) -> Effect {
+        let Mode::Language { selected, startup } = &mut self.mode else { return Effect::None };
+        let count = filetype::FILE_TYPES.len();
+        match key.code {
+            KeyCode::Esc => {
+                // At start-up: a plain Rust window; from File > New: nothing.
+                let startup = *startup;
+                self.mode = Mode::Edit;
+                if startup {
+                    self.new_window_of(filetype::DEFAULT_EXT);
+                }
+            }
+            KeyCode::Up => *selected = (*selected + count - 1) % count,
+            KeyCode::Down | KeyCode::Tab => *selected = (*selected + 1) % count,
+            KeyCode::Home => *selected = 0,
+            KeyCode::End => *selected = count - 1,
+            KeyCode::Enter => {
+                let index = *selected;
+                self.choose_language(index);
+            }
+            KeyCode::Char(c) => {
+                if let Some(index) = filetype::by_key(c) {
+                    self.choose_language(index);
+                }
+            }
+            _ => {}
+        }
+        Effect::None
+    }
+
+    fn choose_language(&mut self, index: usize) {
+        let ext = filetype::ext_of(index);
+        self.mode = Mode::Edit;
+        filetype::remember(ext);
+        self.new_window_of(ext);
+    }
+
+    /// A new untitled window of this type (an empty untitled one is reused).
+    fn new_window_of(&mut self, ext: &'static str) {
+        if self.buffer().is_blank() {
+            self.buffer_mut().ext = Some(ext);
+        } else {
+            self.windows.insert(self.active + 1, Buffer::untitled(ext));
+            self.active += 1;
+        }
+        self.status = format!("New file ({})", filetype::untitled_name(Some(ext)));
+    }
 
     fn new_window(&mut self) {
         self.windows.insert(self.active + 1, Buffer::default());
@@ -854,6 +913,102 @@ mod tests {
         app.check_finished(BuildResult { success: false, diagnostics: vec![error], target: None });
         assert!(app.status.starts_with("ERROR 1/1: bad"), "{}", app.status);
         assert_eq!((app.buffer().row, app.buffer().char_col()), (1, 4), "jumps to the error");
+    }
+
+    /// Keeps these tests away from the real settings file, and makes the tests that
+    /// use it take turns (the settings file is shared by the whole test process).
+    fn isolate_settings() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        ONCE.call_once(|| {
+            let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tui-language-settings.txt");
+            let _ = std::fs::remove_file(&file);
+            // SAFETY: set once, before any test here reads settings.
+            unsafe { std::env::set_var("RUST_IDE_CONFIG_FILE", file) };
+        });
+        guard
+    }
+
+    #[test]
+    fn startup_chooser_keys() {
+        let _settings = isolate_settings();
+        let mut app = App::new(&[]);
+        app.ask_language(true);
+        assert!(matches!(app.mode, Mode::Language { startup: true, .. }));
+        app.handle(key(KeyCode::Home));
+        app.handle(key(KeyCode::Down));
+        app.handle(key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Edit));
+        assert_eq!(app.buffer().ext, Some("py"));
+        assert_eq!(app.buffer().name(), "NONAME.PY");
+        assert_eq!(app.buffer().lang(), rust_ide::highlight::Lang::Python);
+        assert_eq!(app.windows.len(), 1, "the empty start window is reused");
+
+        app.ask_language(false);
+        app.handle(key(KeyCode::Char('m')));
+        assert_eq!((app.buffer().ext, app.buffer().lang()), (Some("md"), rust_ide::highlight::Lang::Plain));
+        app.ask_language(false);
+        app.handle(key(KeyCode::Char('3')));
+        assert_eq!(app.buffer().name(), "NONAME.TXT");
+        app.ask_language(false);
+        app.handle(key(KeyCode::Char('z')));
+        assert!(matches!(app.mode, Mode::Language { .. }), "other keys leave the list open");
+    }
+
+    #[test]
+    fn escape_and_file_new() {
+        let _settings = isolate_settings();
+        let mut app = App::new(&[]);
+        app.ask_language(true);
+        app.handle(key(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Edit));
+        assert_eq!(app.buffer().ext, Some("rs"), "a plain Rust window");
+
+        typed(&mut app, "x");
+        // File > New (menu item 'n') asks for the language and opens a new window.
+        app.handle(with(KeyCode::Char('f'), KeyModifiers::ALT));
+        app.handle(key(KeyCode::Char('n')));
+        assert!(matches!(app.mode, Mode::Language { startup: false, .. }));
+        app.handle(key(KeyCode::Esc));
+        assert_eq!(app.windows.len(), 1, "cancelled");
+        app.handle(with(KeyCode::Char('f'), KeyModifiers::ALT));
+        app.handle(key(KeyCode::Char('n')));
+        app.handle(key(KeyCode::Char('p')));
+        assert_eq!(app.windows.len(), 2);
+        assert_eq!(app.active, 1);
+        assert_eq!(app.buffer().name(), "NONAME.PY");
+        assert_eq!(app.windows[0].name(), "NONAME.RS");
+    }
+
+    #[test]
+    fn the_last_choice_is_preselected() {
+        let _settings = isolate_settings();
+        let mut app = App::new(&[]);
+        app.ask_language(false);
+        app.handle(key(KeyCode::Char('m')));
+        app.ask_language(false);
+        assert!(matches!(app.mode, Mode::Language { selected: 3, .. }));
+        app.handle(key(KeyCode::Enter));
+        assert_eq!(app.buffer().ext, Some("md"));
+    }
+
+    #[test]
+    fn save_as_adds_the_chosen_extension() {
+        let _settings = isolate_settings();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tui-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(dir.join("saved_name.py"));
+        let mut app = App::new(&[]);
+        app.ask_language(false);
+        app.handle(key(KeyCode::Char('p')));
+        typed(&mut app, "print(1)");
+        app.handle(key(KeyCode::F(2)));
+        assert!(matches!(app.mode, Mode::Prompt { kind: PromptKind::SaveAs, .. }));
+        typed(&mut app, &format!("{}\n", dir.join("saved_name").display()));
+        assert!(dir.join("saved_name.py").is_file(), "typed without an extension: .py is added");
+        assert!(!app.buffer().modified);
+        assert_eq!(app.buffer().name(), "saved_name.py");
     }
 
     #[test]

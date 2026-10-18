@@ -16,7 +16,11 @@ pub enum Lang {
 
 impl Lang {
     pub fn from_path(path: Option<&std::path::Path>) -> Self {
-        match path.and_then(|p| p.extension()).and_then(|e| e.to_str()) {
+        Self::from_extension(path.and_then(|p| p.extension()).and_then(|e| e.to_str()))
+    }
+
+    pub fn from_extension(ext: Option<&str>) -> Self {
+        match ext {
             Some("rs") => Lang::Rust,
             Some("py" | "pyw") => Lang::Python,
             _ => Lang::Plain,

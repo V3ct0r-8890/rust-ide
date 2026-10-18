@@ -6,6 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
+use rust_ide::filetype;
+use rust_ide::highlight::Lang;
+
 const TAB: usize = 4;
 const UNDO_LIMIT: usize = 200;
 
@@ -21,6 +24,8 @@ pub struct Buffer {
     pub row: usize,
     pub col: usize,
     pub path: Option<PathBuf>,
+    /// Type chosen for a window that has no file name yet.
+    pub ext: Option<&'static str>,
     pub modified: bool,
     /// First visible line and first visible character column.
     pub scroll: usize,
@@ -40,6 +45,7 @@ impl Default for Buffer {
             row: 0,
             col: 0,
             path: None,
+            ext: None,
             modified: false,
             scroll: 0,
             hscroll: 0,
@@ -57,6 +63,11 @@ impl Buffer {
         let mut buffer = Self::from_text(text.trim_start_matches('\u{feff}'));
         buffer.path = Some(path.to_path_buf());
         Ok(buffer)
+    }
+
+    /// An empty window of a chosen type, without a file name yet.
+    pub fn untitled(ext: &'static str) -> Self {
+        Self { ext: Some(ext), ..Self::default() }
     }
 
     pub fn from_text(text: &str) -> Self {
@@ -79,7 +90,15 @@ impl Buffer {
         self.path
             .as_deref()
             .and_then(Path::file_name)
-            .map_or("NONAME.RS".to_string(), |n| n.to_string_lossy().into_owned())
+            .map_or(filetype::untitled_name(self.ext), |n| n.to_string_lossy().into_owned())
+    }
+
+    /// The language of the file: from its name, or from the chosen type.
+    pub fn lang(&self) -> Lang {
+        match &self.path {
+            Some(path) => Lang::from_path(Some(path)),
+            None => Lang::from_extension(self.ext),
+        }
     }
 
     pub fn is_blank(&self) -> bool {

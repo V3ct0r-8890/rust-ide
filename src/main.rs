@@ -5,7 +5,7 @@
 
 mod cursor;
 
-use rust_ide::{dap, deps, highlight, lsp, output, platform, runner, search, vim};
+use rust_ide::{dap, deps, filetype, highlight, lsp, output, platform, runner, search, vim};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -56,7 +56,8 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Menus", "Esc", "Close the menu, dialog or panel"),
     ("File", "F2 / Ctrl+S", "Save"),
     ("File", "F3 / Ctrl+O", "Open (in a new window)"),
-    ("File", "Alt+F N / A", "New window / Save as (File menu)"),
+    ("File", "Alt+F N / A", "New window (asks for the language) / Save as (File menu)"),
+    ("File", "R P T M or 1-4", "In the language list: Rust, Python, Text, Markdown (Up/Down, Enter, Esc work too)"),
     ("File", "Alt+X", "Exit (press twice to discard changes)"),
     ("Window", "F6 / Shift+F6", "Next / previous window"),
     ("Window", "Alt+1 ... Alt+9", "Go to window 1-9"),
@@ -435,6 +436,9 @@ struct Ide {
     vim: Option<vim::Vim>,
     /// Run the syntax check first for compile and run; stop on errors.
     check_before: bool,
+    /// Type (extension) chosen for the active window while it has no file name.
+    untitled_ext: Option<&'static str>,
+    language: Option<LanguageDialog>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     /// True while consecutive typing is being collected into one undo step.
@@ -480,12 +484,22 @@ struct SearchBar {
     case: bool,
 }
 
+/// The "choose a language" list shown at start-up and by File > New.
+struct LanguageDialog {
+    selected: usize,
+    /// Shown because no file was given on the command line; Esc then gives a
+    /// plain Rust window instead of cancelling.
+    startup: bool,
+}
+
 /// A file open in a window that is not the active one. The active window's
 /// state lives directly in `Ide` (content, path, modified, undo, ...).
 #[derive(Default)]
 struct Buffer {
     content: text_editor::Content,
     path: Option<PathBuf>,
+    /// Type chosen for a window that has no file name yet.
+    ext: Option<&'static str>,
     modified: bool,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
@@ -548,6 +562,7 @@ enum Message {
     ToggleVim,
     ToggleCheckBefore,
     SyntaxCheck,
+    NewFileType(usize),
     OpenSearch(SearchMode),
     SearchQuery(String),
     SearchReplacement(String),
@@ -591,6 +606,7 @@ impl Ide {
             .filter(|a| !a.to_string_lossy().starts_with("--"))
             .map(PathBuf::from)
             .collect();
+        let no_files = files.is_empty();
         for path in files {
             if path.exists() {
                 ide.open_path(&path);
@@ -604,6 +620,10 @@ impl Ide {
         }
         if ide.window_count() > 1 {
             let _ = ide.select_window(0);
+        }
+        // Started without a file: ask which language to use.
+        if no_files {
+            ide.language = Some(LanguageDialog { selected: filetype::last_choice(), startup: true });
         }
         let check = if ide.check_at_startup {
             Task::perform(platform::blocking(move || deps::check(os)), |list| Message::DepsChecked(list, true))
@@ -623,7 +643,7 @@ impl Ide {
             .path
             .as_deref()
             .and_then(Path::file_name)
-            .map_or("NONAME.RS".into(), |n| n.to_string_lossy().into_owned());
+            .map_or(filetype::untitled_name(self.untitled_ext), |n| n.to_string_lossy().into_owned());
         let dirty = if self.modified { " *" } else { "" };
         format!("{name}{dirty} - Rust IDE")
     }
@@ -708,18 +728,13 @@ impl Ide {
                 Task::none()
             }
             Message::CloseMenu => Task::none(),
-            Message::New => {
-                if !self.is_blank_window() {
-                    self.open_window(Buffer::default());
-                }
-                self.status = "New file".into();
-                iced::widget::operation::focus(EDITOR)
-            }
+            Message::New => self.ask_language(false),
+            Message::NewFileType(index) => self.choose_language(index),
             Message::Open => {
                 Task::perform(
                     rfd::AsyncFileDialog::new()
                         .set_title("Open")
-                        .add_filter("Rust / Python", &["rs", "py", "pyw"])
+                        .add_filter("Source and text", &["rs", "py", "pyw", "txt", "md"])
                         .add_filter("All files", &["*"])
                         .pick_file(),
                     |file| Message::Opened(file.map(|f| f.path().to_path_buf())),
@@ -744,7 +759,7 @@ impl Ide {
             }
             Message::Opened(None) => Task::none(),
             Message::Save => self.save(AfterSave::Nothing),
-            Message::SaveAs => save_as_dialog(AfterSave::Nothing),
+            Message::SaveAs => self.save_as(AfterSave::Nothing),
             Message::SaveAsPicked(Some(path), after) => {
                 self.path = Some(path);
                 self.modified = true; // force a write to the new location
@@ -887,6 +902,9 @@ impl Ide {
                 Task::none()
             }
             Message::Escape => {
+                if self.language.is_some() {
+                    return self.close_language_dialog();
+                }
                 if self.menu.is_some() {
                     self.menu = None;
                 } else if self.help {
@@ -1148,7 +1166,7 @@ impl Ide {
             self.refresh_completion();
         }
         if let Some(c) = typed {
-            let lang = Lang::from_path(self.path.as_deref());
+            let lang = self.lang();
             let before = self.char_before_cursor(1);
             if c == '.' || (c == ':' && lang == Lang::Rust && before == Some(':')) {
                 self.request_completion(Some(c));
@@ -1220,16 +1238,98 @@ impl Ide {
 
     /// Window names in order, with `*` for unsaved changes.
     fn window_names(&self) -> Vec<String> {
-        let name = |path: &Option<PathBuf>, modified: bool| {
+        let name = |path: &Option<PathBuf>, ext: Option<&'static str>, modified: bool| {
             let file = path
                 .as_deref()
                 .and_then(Path::file_name)
-                .map_or("NONAME.RS".to_string(), |n| n.to_string_lossy().into_owned());
+                .map_or(filetype::untitled_name(ext), |n| n.to_string_lossy().into_owned());
             if modified { format!("{file}*") } else { file }
         };
-        let mut names: Vec<String> = self.background.iter().map(|b| name(&b.path, b.modified)).collect();
-        names.insert(self.active, name(&self.path, self.modified));
+        let mut names: Vec<String> = self.background.iter().map(|b| name(&b.path, b.ext, b.modified)).collect();
+        names.insert(self.active, name(&self.path, self.untitled_ext, self.modified));
         names
+    }
+
+    /// The language of the active window: from its file name, or from the
+    /// type chosen for a new file.
+    fn lang(&self) -> Lang {
+        match &self.path {
+            Some(path) => Lang::from_path(Some(path)),
+            None => Lang::from_extension(self.untitled_ext),
+        }
+    }
+
+    /// The name offered by Save As.
+    fn suggested_name(&self) -> String {
+        match self.path.as_deref().and_then(Path::file_name) {
+            Some(name) => name.to_string_lossy().into_owned(),
+            None => filetype::untitled_name(self.untitled_ext),
+        }
+    }
+
+    fn save_as(&self, after: AfterSave) -> Task<Message> {
+        let ext = match self.path.as_deref().and_then(Path::extension) {
+            Some(ext) => ext.to_string_lossy().into_owned(),
+            None => self.untitled_ext.unwrap_or(filetype::DEFAULT_EXT).to_string(),
+        };
+        save_as_dialog(after, self.suggested_name(), ext)
+    }
+
+    // ----- New file: choose a language -----
+
+    fn ask_language(&mut self, startup: bool) -> Task<Message> {
+        self.language = Some(LanguageDialog { selected: filetype::last_choice(), startup });
+        iced::widget::operation::focus(EDITOR)
+    }
+
+    fn choose_language(&mut self, index: usize) -> Task<Message> {
+        let ext = filetype::ext_of(index);
+        self.language = None;
+        filetype::remember(ext);
+        self.new_window_of(ext);
+        iced::widget::operation::focus(EDITOR)
+    }
+
+    /// Esc: at start-up a plain Rust window, from File > New nothing.
+    fn close_language_dialog(&mut self) -> Task<Message> {
+        if let Some(dialog) = self.language.take()
+            && dialog.startup
+        {
+            self.new_window_of(filetype::DEFAULT_EXT);
+        }
+        iced::widget::operation::focus(EDITOR)
+    }
+
+    /// A new untitled window of this type (an empty untitled one is reused).
+    fn new_window_of(&mut self, ext: &'static str) {
+        if self.is_blank_window() {
+            self.untitled_ext = Some(ext);
+        } else {
+            self.open_window(Buffer { ext: Some(ext), ..Buffer::default() });
+        }
+        self.status = format!("New file ({})", filetype::untitled_name(Some(ext)));
+    }
+
+    fn language_key(&mut self, key: NavKey) -> Task<Message> {
+        let Some(dialog) = &mut self.language else { return Task::none() };
+        let count = filetype::FILE_TYPES.len();
+        match key {
+            NavKey::Up => dialog.selected = (dialog.selected + count - 1) % count,
+            NavKey::Down | NavKey::Tab => dialog.selected = (dialog.selected + 1) % count,
+            NavKey::Home => dialog.selected = 0,
+            NavKey::End => dialog.selected = count - 1,
+            NavKey::Enter => {
+                let index = dialog.selected;
+                return self.choose_language(index);
+            }
+            NavKey::Char(c) => {
+                if let Some(index) = filetype::by_key(c) {
+                    return self.choose_language(index);
+                }
+            }
+            _ => {}
+        }
+        Task::none()
     }
 
     /// An untitled, unchanged, empty window that a file can simply replace.
@@ -1243,6 +1343,7 @@ impl Ide {
         Buffer {
             content: std::mem::take(&mut self.content),
             path: self.path.take(),
+            ext: self.untitled_ext.take(),
             modified: std::mem::take(&mut self.modified),
             undo: std::mem::take(&mut self.undo),
             redo: std::mem::take(&mut self.redo),
@@ -1254,6 +1355,7 @@ impl Ide {
     fn put_active(&mut self, buffer: Buffer) {
         self.content = buffer.content;
         self.path = buffer.path;
+        self.untitled_ext = buffer.ext;
         self.modified = buffer.modified;
         self.undo = buffer.undo;
         self.redo = buffer.redo;
@@ -1320,6 +1422,7 @@ impl Ide {
         }
         self.content = text_editor::Content::with_text(source.trim_start_matches('\u{feff}'));
         self.path = Some(path.to_path_buf());
+        self.untitled_ext = None;
         self.modified = false;
         self.undo.clear();
         self.redo.clear();
@@ -1615,6 +1718,9 @@ impl Ide {
 
     /// Arrow keys, Enter and letters for whatever modal thing is open.
     fn navigate(&mut self, key: NavKey) -> Task<Message> {
+        if self.language.is_some() {
+            return self.language_key(key);
+        }
         if let Some(menu) = self.menu {
             return self.menu_key(menu, key);
         }
@@ -2045,7 +2151,7 @@ impl Ide {
 
     fn save(&mut self, after: AfterSave) -> Task<Message> {
         let Some(path) = self.path.clone() else {
-            return save_as_dialog(after);
+            return self.save_as(after);
         };
         if self.modified || !path.exists() {
             if let Err(e) = std::fs::write(&path, self.content.text()) {
@@ -2354,7 +2460,7 @@ impl Ide {
 
         let popup_open = self.completion.is_some();
         // While a menu, dialog or the help screen is open, keys drive it, not the text.
-        let modal = self.menu.is_some() || self.help || self.deps.is_some();
+        let modal = self.menu.is_some() || self.help || self.deps.is_some() || self.language.is_some();
         let vim_mode = self.vim.as_ref().map(|v| (v.mode, v.command.is_some()));
         let editor = text_editor(&self.content)
             .id(EDITOR)
@@ -2362,7 +2468,7 @@ impl Ide {
             .height(Length::Fill)
             .highlight_with::<highlight::Highlighter>(
                 highlight::Settings {
-                    lang: Lang::from_path(self.path.as_deref()),
+                    lang: self.lang(),
                     marks: self.editor_marks(),
                 },
                 highlight::to_format,
@@ -2432,6 +2538,9 @@ impl Ide {
         }
         if let Some(dialog) = &self.deps {
             layers = layers.push(self.deps_dialog(dialog));
+        }
+        if let Some(dialog) = &self.language {
+            layers = layers.push(language_dialog(dialog));
         }
         if self.help {
             layers = layers.push(help_screen());
@@ -2835,15 +2944,60 @@ fn run_build(path: &Path, after: AfterSave, check_first: bool) -> (BuildResult, 
     (runner::build(path), false)
 }
 
-fn save_as_dialog(after: AfterSave) -> Task<Message> {
+fn save_as_dialog(after: AfterSave, name: String, ext: String) -> Task<Message> {
+    let mut dialog = rfd::AsyncFileDialog::new().set_title("Save As").set_file_name(name);
+    // The file's own type comes first in the list of types.
+    let mut kinds: Vec<&filetype::FileType> = filetype::FILE_TYPES.iter().collect();
+    kinds.sort_by_key(|kind| kind.ext != ext);
+    for kind in kinds {
+        dialog = dialog.add_filter(kind.label, &[kind.ext]);
+    }
     Task::perform(
-        rfd::AsyncFileDialog::new()
-            .set_title("Save As")
-            .add_filter("Rust", &["rs"])
-            .add_filter("Python", &["py"])
-            .add_filter("All files", &["*"])
-            .save_file(),
+        dialog.add_filter("All files", &["*"]).save_file(),
         move |file| Message::SaveAsPicked(file.map(|f| f.path().to_path_buf()), after),
+    )
+}
+
+/// The "choose a language" list.
+fn language_dialog(dialog: &LanguageDialog) -> Element<'static, Message> {
+    let rows = filetype::FILE_TYPES.iter().enumerate().map(|(index, kind)| {
+        let chosen = index == dialog.selected;
+        button(row![
+            hotkey_label(kind.label, kind.hotkey),
+            Space::new().width(Length::Fill),
+            text(format!(".{}", kind.ext)).color(Color::BLACK),
+        ])
+        .width(Length::Fill)
+        .padding([3, 10])
+        .on_press(Message::NewFileType(index))
+        .style(move |_, status| button::Style {
+            background: Some(Background::Color(
+                if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
+            )),
+            ..button::Style::default()
+        })
+        .into()
+    });
+    let (title, escape) = if dialog.startup {
+        (" Choose a language ", "Esc: Rust")
+    } else {
+        (" New file: choose a language ", "Esc: cancel")
+    };
+    let body = column![
+        container(text(title).color(Color::WHITE))
+            .width(Length::Fill)
+            .padding(2)
+            .style(|_| container::Style::default().background(TURBO_BLUE)),
+        column(rows).padding(8),
+        container(text(filetype::NOTE).color(TURBO_DARK_GRAY).size(12)).padding([0, 10]),
+        container(text(format!(" Up/Down  Enter OK  R P T M or 1-4  {escape}")).color(Color::BLACK)).padding(10),
+    ];
+    opaque(
+        container(container(body).width(520).style(|_| container::Style {
+            border: iced::Border::default().color(Color::BLACK).width(1),
+            ..container::Style::default().background(TURBO_GRAY)
+        }))
+        .center(Length::Fill),
     )
 }
 
@@ -3519,5 +3673,157 @@ mod syntax_check_tests {
         assert!(item.label.ends_with("[x]") && item.hotkey == 'c');
         let items = menu_items(Menu::Options, Toggles::default(), &[], 0);
         assert!(items.iter().any(|i| i.label.starts_with("Check before run") && i.label.ends_with("[ ]")));
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+
+    /// Keeps these tests away from the real settings file, and makes the tests that
+    /// use it take turns (the settings file is shared by the whole test process).
+    fn isolate_settings() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        ONCE.call_once(|| {
+            let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("language-tests-settings.txt");
+            let _ = std::fs::remove_file(&file);
+            // SAFETY: set once, before any test here reads settings.
+            unsafe { std::env::set_var("RUST_IDE_CONFIG_FILE", file) };
+        });
+        guard
+    }
+
+    fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
+        for message in messages {
+            let _ = ide.update(message);
+        }
+    }
+
+    fn type_text(ide: &mut Ide, text: &str) {
+        for c in text.chars() {
+            send(ide, [Message::Edit(Action::Edit(Edit::Insert(c)))]);
+        }
+    }
+
+    #[test]
+    fn startup_chooser_picks_python_with_the_arrow_keys() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        let _ = ide.ask_language(true);
+        assert!(ide.language.as_ref().is_some_and(|d| d.startup));
+        send(&mut ide, [Message::Nav(NavKey::Home), Message::Nav(NavKey::Down)]);
+        assert_eq!(ide.language.as_ref().map(|d| d.selected), Some(1));
+        send(&mut ide, [Message::Nav(NavKey::Enter)]);
+        assert!(ide.language.is_none());
+        assert_eq!(ide.untitled_ext, Some("py"));
+        assert_eq!(ide.lang(), Lang::Python);
+        assert_eq!(ide.window_count(), 1, "the empty start window is reused");
+        assert_eq!(ide.title(), "NONAME.PY - Rust IDE");
+        assert_eq!(ide.suggested_name(), "NONAME.PY");
+    }
+
+    #[test]
+    fn letters_digits_and_clicks_pick_a_type() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        let _ = ide.ask_language(false);
+        send(&mut ide, [Message::Nav(NavKey::Char('m'))]);
+        assert_eq!((ide.untitled_ext, ide.lang()), (Some("md"), Lang::Plain));
+        assert_eq!(ide.title(), "NONAME.MD - Rust IDE");
+
+        send(&mut ide, [Message::New, Message::Nav(NavKey::Char('3'))]);
+        assert_eq!(ide.untitled_ext, Some("txt"));
+        assert_eq!(ide.suggested_name(), "NONAME.TXT");
+
+        send(&mut ide, [Message::New, Message::NewFileType(0)]);
+        assert_eq!((ide.untitled_ext, ide.lang()), (Some("rs"), Lang::Rust));
+
+        send(&mut ide, [Message::New, Message::Nav(NavKey::Char('z'))]);
+        assert!(ide.language.is_some(), "an unrelated key leaves the list open");
+        assert_eq!(ide.untitled_ext, Some("rs"));
+    }
+
+    #[test]
+    fn file_new_makes_a_new_window_unless_the_current_one_is_empty() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        type_text(&mut ide, "x");
+        send(&mut ide, [Message::New, Message::Nav(NavKey::Char('p'))]);
+        assert_eq!(ide.window_count(), 2);
+        assert_eq!(ide.window_names(), ["NONAME.RS*", "NONAME.PY"]);
+        assert_eq!(ide.active, 1);
+
+        // The first window keeps its own type when switching back and forth.
+        send(&mut ide, [Message::SelectWindow(0)]);
+        assert_eq!((ide.untitled_ext, ide.lang()), (None, Lang::Plain));
+        send(&mut ide, [Message::SelectWindow(1)]);
+        assert_eq!((ide.untitled_ext, ide.lang()), (Some("py"), Lang::Python));
+
+        // An empty window is reused by the next choice.
+        send(&mut ide, [Message::New, Message::Nav(NavKey::Char('m'))]);
+        assert_eq!(ide.window_count(), 2);
+        assert_eq!(ide.untitled_ext, Some("md"));
+    }
+
+    #[test]
+    fn escape_gives_a_rust_window_at_startup_and_cancels_file_new() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        let _ = ide.ask_language(true);
+        send(&mut ide, [Message::Escape]);
+        assert!(ide.language.is_none());
+        assert_eq!(ide.untitled_ext, Some("rs"));
+
+        let mut ide = Ide::default();
+        type_text(&mut ide, "x");
+        send(&mut ide, [Message::New, Message::Escape]);
+        assert!(ide.language.is_none());
+        assert_eq!(ide.window_count(), 1, "cancelled: no new window");
+    }
+
+    #[test]
+    fn the_last_choice_is_preselected_next_time() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        let _ = ide.ask_language(false);
+        send(&mut ide, [Message::Nav(NavKey::Char('m'))]);
+        let _ = ide.ask_language(false);
+        assert_eq!(ide.language.as_ref().map(|d| d.selected), Some(3), "Markdown, as chosen last time");
+        send(&mut ide, [Message::Nav(NavKey::Enter)]);
+        assert_eq!(ide.untitled_ext, Some("md"), "Enter alone repeats the last choice");
+    }
+
+    #[test]
+    fn a_file_name_decides_the_language_and_text_files_open() {
+        let _settings = isolate_settings();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("language-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let rs = dir.join("lang.rs");
+        let txt = dir.join("notes.txt");
+        let md = dir.join("readme.md");
+        std::fs::write(&rs, "fn main() {}\n").unwrap();
+        std::fs::write(&txt, "plain words\n").unwrap();
+        std::fs::write(&md, "# Title\n").unwrap();
+
+        let mut ide = Ide::default();
+        ide.untitled_ext = Some("py");
+        ide.open_path(&rs);
+        assert_eq!(ide.lang(), Lang::Rust, "the file name beats the chosen type");
+        assert_eq!(ide.untitled_ext, None);
+        ide.open_path(&txt);
+        assert_eq!((ide.lang(), ide.title().as_str()), (Lang::Plain, "notes.txt - Rust IDE"));
+        ide.open_path(&md);
+        assert_eq!((ide.lang(), ide.content.text().as_str()), (Lang::Plain, "# Title\n"));
+        assert_eq!(ide.suggested_name(), "readme.md");
+    }
+
+    #[test]
+    fn the_chooser_dialog_builds_and_is_in_the_help() {
+        let _settings = isolate_settings();
+        let _ = language_dialog(&LanguageDialog { selected: 1, startup: true });
+        let _ = language_dialog(&LanguageDialog { selected: 3, startup: false });
+        assert!(SHORTCUTS.iter().any(|(_, keys, _)| keys.contains("R P T M")), "listed in the F1 help");
     }
 }

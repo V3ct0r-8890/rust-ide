@@ -5,7 +5,8 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
-use rust_ide::highlight::{Highlight, Lang, LineHighlighter};
+use rust_ide::filetype;
+use rust_ide::highlight::{Highlight, LineHighlighter};
 
 use crate::app::{App, MENUS, Menu, Mode, PromptKind};
 
@@ -52,6 +53,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Prompt { kind, input } => draw_prompt(frame, *kind, input),
         Mode::Open(dialog) => draw_open(frame, dialog),
         Mode::Help { scroll } => draw_help(frame, *scroll),
+        Mode::Language { selected, startup } => draw_language(frame, *selected, *startup),
     }
 }
 
@@ -118,7 +120,7 @@ fn color(highlight: Highlight) -> Color {
 
 fn draw_editor(frame: &mut Frame, app: &App, area: Rect) {
     let buffer = app.buffer();
-    let mut highlighter = LineHighlighter::new(Lang::from_path(buffer.path.as_deref()));
+    let mut highlighter = LineHighlighter::new(buffer.lang());
     let width = area.width as usize;
     let mut lines = Vec::with_capacity(area.height as usize);
     // Lines above the view are still lexed, for multi-line comments/strings.
@@ -241,7 +243,11 @@ fn draw_prompt(frame: &mut Frame, kind: PromptKind, input: &str) {
     frame.render_widget(block, area);
     let [field, hint] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(inner);
     frame.render_widget(Paragraph::new(format!(" {input}")).style(EDITOR.fg(Color::White)), field);
-    frame.render_widget(Paragraph::new(" Enter OK   Esc Cancel").style(BAR), hint);
+    let hint_text = match kind {
+        PromptKind::SaveAs => " Enter OK  Esc Cancel  (no extension: file type is added)",
+        _ => " Enter OK   Esc Cancel",
+    };
+    frame.render_widget(Paragraph::new(hint_text).style(BAR), hint);
     frame.set_cursor_position(Position::new(field.x + 1 + input.chars().count() as u16, field.y));
 }
 
@@ -279,6 +285,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("F1", "This help (Up/Down/PgUp/PgDn scroll, Esc closes)"),
     ("F2 / Ctrl+S", "Save (asks for a name the first time)"),
     ("F3 / Ctrl+O", "Open a file (each in its own window)"),
+    ("File > New", "Asks for the language: R Rust, P Python, T Text, M Markdown (or 1-4)"),
     ("Alt+X / Ctrl+Q", "Exit (press twice to discard changes)"),
     ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
     ("Tab / Shift+Tab", "Indent / unindent"),
@@ -296,6 +303,34 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Alt+1 ... Alt+9", "Go to window 1-9; Alt+0 window list"),
     ("Alt+F3", "Close the window"),
 ];
+
+fn draw_language(frame: &mut Frame, selected: usize, startup: bool) {
+    let title = if startup { "Choose a language" } else { "New file: choose a language" };
+    let area = centered(frame.area(), 64, 11);
+    frame.render_widget(Clear, area);
+    let block = dialog(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [list, note, hint] =
+        Layout::vertical([Constraint::Length(filetype::FILE_TYPES.len() as u16 + 1), Constraint::Length(2), Constraint::Length(1)])
+            .areas(inner);
+    let lines: Vec<Line> = filetype::FILE_TYPES
+        .iter()
+        .enumerate()
+        .map(|(index, kind)| {
+            let (normal, hot) = if index == selected { (CHOSEN, CHOSEN.fg(Color::Red)) } else { (BAR, HOTKEY) };
+            let mut spans = vec![Span::styled(" ", normal)];
+            spans.extend(hotkey_spans(kind.label, kind.hotkey, normal, hot));
+            let pad = (list.width as usize).saturating_sub(kind.label.chars().count() + kind.ext.len() + 3);
+            spans.push(Span::styled(format!("{}.{} ", " ".repeat(pad), kind.ext), normal));
+            Line::from(spans)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).style(BAR), list);
+    frame.render_widget(Paragraph::new(format!(" {}", filetype::NOTE)).style(BAR.fg(Color::DarkGray)).wrap(ratatui::widgets::Wrap { trim: true }), note);
+    let escape = if startup { "Esc: plain Rust window" } else { "Esc: cancel" };
+    frame.render_widget(Paragraph::new(format!(" Up/Down  Enter OK  R P T M / 1-4  {escape}")).style(BAR), hint);
+}
 
 fn draw_help(frame: &mut Frame, scroll: usize) {
     let area = centered(frame.area(), 76, 22);
@@ -343,6 +378,20 @@ mod tests {
         assert!(lines[0].contains("File") && lines[0].contains("Search") && lines[0].contains("Help"));
         assert!(lines[1].starts_with("fn main() {}"));
         assert!(lines[9].contains("F1 Help") && lines[9].trim_end().ends_with("1:13"));
+    }
+
+    #[test]
+    fn draws_the_language_chooser() {
+        let mut app = App::new(&[]);
+        app.ask_language(true);
+        let text = screen(&app, 80, 20);
+        for expected in ["Choose a language", "Rust", "Python", "Text file", "Markdown", ".rs", ".md", "Rust and Python are supported"] {
+            assert!(text.contains(expected), "missing {expected:?} in\n{text}");
+        }
+        assert!(text.contains("Esc: plain Rust window"));
+        app.ask_language(false);
+        let text = screen(&app, 80, 20);
+        assert!(text.contains("New file: choose a language") && text.contains("Esc: cancel"));
     }
 
     #[test]
