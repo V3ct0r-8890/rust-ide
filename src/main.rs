@@ -86,6 +86,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Options", "Alt+O D", "Dependencies: Up/Down, I install, C copy, G guide, R re-check, S startup check"),
     ("Options", "Alt+O V", "Vim mode on / off"),
     ("Options", "Alt+O C", "Check the syntax before compile / run on / off"),
+    ("Options", "Ctrl+= / Ctrl+- / Ctrl+0", "Editor font larger / smaller / default size (also Alt+O B / S / R)"),
     ("Options", "Alt+O L / H / T", "Window style: legacy windows / horizontal tabs / vertical tabs"),
     ("Help", "F1", "This list (Up/Down, Page Up/Down scroll; Esc or F1 closes)"),
     ("Vim", "i a o O, Esc", "Insert mode, back to Normal"),
@@ -272,6 +273,11 @@ struct Toggles {
     preview: bool,
 }
 
+/// Text size of the editor, the preview and the user screen, in points.
+const FONT_DEFAULT: i16 = 16;
+const FONT_MIN: i16 = 10;
+const FONT_MAX: i16 = 32;
+
 fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -> Vec<MenuItem> {
     match menu {
         Menu::File => vec![
@@ -326,6 +332,9 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
                     Message::ToggleCheckBefore,
                 ),
             ];
+            items.push(item("Font larger", 'b', "Ctrl+=", Message::FontLarger));
+            items.push(item("Font smaller", 's', "Ctrl+-", Message::FontSmaller));
+            items.push(item("Font default", 'r', "Ctrl+0", Message::FontDefault));
             // How windows are shown: pick one.
             for (style, hotkey) in [
                 (WindowStyle::Legacy, 'l'),
@@ -495,6 +504,8 @@ struct Ide {
     os: Option<Os>,
     deps: Option<DepsDialog>,
     check_at_startup: bool,
+    /// Font size now, in points (0 = not set yet; see `font_size`).
+    font_points: i16,
     /// Vim emulation, when enabled in Options.
     vim: Option<vim::Vim>,
     /// Run the syntax check first for compile and run; stop on errors.
@@ -638,6 +649,9 @@ enum Message {
     NewFileType(usize),
     WindowStyle(WindowStyle),
     TogglePreview,
+    FontLarger,
+    FontSmaller,
+    FontDefault,
     PreviewLink(String),
     OpenSearch(SearchMode),
     SearchQuery(String),
@@ -673,6 +687,9 @@ impl Ide {
         ide.os = Some(os);
         ide.check_before = platform::read_setting("check_before").as_deref() == Some("true");
         ide.window_style = WindowStyle::from_setting(platform::read_setting("window_style").as_deref());
+        ide.font_points = platform::read_setting("font_size")
+            .and_then(|v| v.trim().parse::<i16>().ok())
+            .map_or(0, |v| v.clamp(FONT_MIN, FONT_MAX));
         if platform::read_setting("vim").as_deref() == Some("true") {
             ide.vim = Some(vim::Vim::default());
         }
@@ -722,6 +739,24 @@ impl Ide {
         if let Err(e) = platform::write_setting(key, value) {
             self.status = format!("Cannot save settings: {e}");
         }
+    }
+
+    /// The font size in points, always inside the allowed range.
+    fn font_size(&self) -> i16 {
+        if self.font_points == 0 { FONT_DEFAULT } else { self.font_points.clamp(FONT_MIN, FONT_MAX) }
+    }
+
+    fn set_font_size(&mut self, points: i16) -> Task<Message> {
+        let points = points.clamp(FONT_MIN, FONT_MAX);
+        let limit = if points == self.font_size() && points != FONT_DEFAULT {
+            if points == FONT_MAX { " (largest)" } else { " (smallest)" }
+        } else {
+            ""
+        };
+        self.font_points = points;
+        self.status = format!("Font size {points}{limit}");
+        self.save_setting("font_size", &points.to_string());
+        iced::widget::operation::focus(EDITOR)
     }
 
     fn toggles(&self) -> Toggles {
@@ -830,6 +865,9 @@ impl Ide {
             Message::CloseMenu => Task::none(),
             Message::New => self.ask_language(false),
             Message::NewFileType(index) => self.choose_language(index),
+            Message::FontLarger => self.set_font_size(self.font_size() + 1),
+            Message::FontSmaller => self.set_font_size(self.font_size() - 1),
+            Message::FontDefault => self.set_font_size(FONT_DEFAULT),
             Message::TogglePreview => {
                 if !self.is_markdown() {
                     self.status = "The preview is for Markdown (.md) files".into();
@@ -1817,7 +1855,7 @@ impl Ide {
     fn preview_pane(&self) -> Element<'_, Message> {
         let mut style = markdown::Style::from(&Theme::Dark);
         style.link_color = TURBO_BLUE;
-        let settings = markdown::Settings::with_text_size(16, style);
+        let settings = markdown::Settings::with_text_size(self.font_size() as u32, style);
         let page = markdown::view(self.preview_content.items(), settings).map(Message::PreviewLink);
         container(scrollable(container(page).padding(12)).id(PREVIEW_SCROLL).width(Length::Fill).height(Length::Fill))
             .width(Length::Fill)
@@ -2698,6 +2736,7 @@ impl Ide {
         let vim_mode = self.vim.as_ref().map(|v| (v.mode, v.command.is_some()));
         let editor = text_editor(&self.content)
             .id(EDITOR)
+            .size(self.font_size() as f32)
             .on_action(Message::Edit)
             .height(Length::Fill)
             .highlight_with::<highlight::Highlighter>(
@@ -2738,7 +2777,7 @@ impl Ide {
                 ..text_editor::default(theme, status)
             });
 
-        let editor = cursor::BlockCursor::new(editor, &self.content, TURBO_YELLOW, TURBO_BLUE);
+        let editor = cursor::BlockCursor::new(editor, &self.content, TURBO_YELLOW, TURBO_BLUE, self.font_size() as f32);
 
         let panel = self.panel_items();
         let mut layout = column![menu_bar];
@@ -2815,7 +2854,7 @@ impl Ide {
         .style(|_| container::Style::default().background(TURBO_GRAY));
 
         let screen = scrollable(
-            text(&self.output.screen).color(SCREEN_TEXT).font(Font::MONOSPACE).width(Length::Fill),
+            text(&self.output.screen).color(SCREEN_TEXT).font(Font::MONOSPACE).size(self.font_size() as f32).width(Length::Fill),
         )
         .anchor_bottom()
         .height(Length::Fill);
@@ -3117,6 +3156,9 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
             Some('p') if modifiers.alt() && !modifiers.control() => Some(Message::TogglePreview),
             Some(c @ '1'..='9') if modifiers.alt() => Some(Message::SelectWindow(c as usize - '1' as usize)),
             Some(c) if modifiers.alt() && !modifiers.control() => Menu::from_hotkey(c).map(Message::OpenMenu),
+            Some('=' | '+') if modifiers.command() => Some(Message::FontLarger),
+            Some('-') if modifiers.command() => Some(Message::FontSmaller),
+            Some('0') if modifiers.command() => Some(Message::FontDefault),
             Some('s') if modifiers.command() => Some(Message::Save),
             Some('o') if modifiers.command() => Some(Message::Open),
             Some('z') if modifiers.command() && modifiers.shift() => Some(Message::Redo),
@@ -4433,5 +4475,64 @@ mod settings_safety_tests {
         ide.persist_settings = true;
         let _ = ide.update(Message::ToggleCheckBefore);
         assert_eq!(platform::read_setting("check_before").as_deref(), Some("true"));
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::*;
+    use crate::test_support::isolate_settings;
+
+    #[test]
+    fn keys_change_the_size_inside_the_limits() {
+        let mut ide = Ide::default();
+        assert_eq!(ide.font_size(), FONT_DEFAULT);
+        for _ in 0..40 {
+            let _ = ide.update(Message::FontLarger);
+        }
+        assert_eq!(ide.font_size(), FONT_MAX);
+        assert!(ide.status.contains("largest"), "{}", ide.status);
+        for _ in 0..40 {
+            let _ = ide.update(Message::FontSmaller);
+        }
+        assert_eq!(ide.font_size(), FONT_MIN);
+        let _ = ide.update(Message::FontDefault);
+        assert_eq!(ide.font_size(), FONT_DEFAULT);
+        let _ = ide.view();
+    }
+
+    #[test]
+    fn ctrl_equals_minus_and_zero_are_the_shortcuts() {
+        let physical = key::Physical::Unidentified(key::NativeCode::Unidentified);
+        let ctrl = Modifiers::CTRL;
+        let key = |c: &str| shortcut(&Key::Character(c.into()), physical, ctrl);
+        assert!(matches!(key("="), Some(Message::FontLarger)));
+        assert!(matches!(key("+"), Some(Message::FontLarger)));
+        assert!(matches!(key("-"), Some(Message::FontSmaller)));
+        assert!(matches!(key("0"), Some(Message::FontDefault)));
+    }
+
+    #[test]
+    fn options_menu_has_the_font_items_with_unique_hotkeys() {
+        let items = menu_items(Menu::Options, Toggles::default(), &[], 0);
+        for (label, hotkey, keys) in [("Font larger", 'b', "Ctrl+="), ("Font smaller", 's', "Ctrl+-"), ("Font default", 'r', "Ctrl+0")] {
+            let i = items.iter().find(|i| i.label == label).expect(label);
+            assert!(i.hotkey == hotkey && i.keys == keys);
+        }
+        let mut hotkeys: Vec<char> = items.iter().map(|i| i.hotkey).collect();
+        hotkeys.sort();
+        hotkeys.dedup();
+        assert_eq!(hotkeys.len(), items.len());
+    }
+
+    #[test]
+    fn the_size_is_saved_and_a_bad_value_is_ignored() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        ide.persist_settings = true;
+        let _ = ide.update(Message::FontLarger);
+        assert_eq!(platform::read_setting("font_size").as_deref(), Some("17"));
+        let _ = ide.update(Message::FontDefault);
+        assert_eq!(platform::read_setting("font_size").as_deref(), Some("16"));
     }
 }

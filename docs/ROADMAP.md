@@ -15,6 +15,7 @@ Last updated: 2026-10-20. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 | Markdown preview | Window version: **Alt+F6** / Alt+P / Window menu shows the rendered `.md` next to the editor (iced's Markdown widget: headings, emphasis, lists, quotes, tables, code blocks, links); follows typing and the cursor; links open in the browser or as files |
 | Window style | Options > Window style (window version): **Legacy windows** (Turbo Pascal frame line with the name and window number), **Horizontal tabs** (default) or **Vertical tabs** (list on the left); same keys in every style; the choice is remembered |
 | New files | Started without a file, the IDE (both versions) asks which language to use: Rust, Python, or Text / Markdown for anything else; File > New asks too. The last choice is remembered and preselected; the type sets highlighting, the `NONAME.xx` name and the Save As default; `.txt` and `.md` open as plain files |
+| Font size | Window version: **Ctrl+=** larger, **Ctrl+-** smaller, **Ctrl+0** default (also Options menu, Alt+O B / S / R); 10 to 32 points, remembered (`font_size` in the settings file). Applies to the editor (with the block cursor), the Markdown preview and the user screen; menus and panels keep their size. The terminal version uses the terminal's own zoom |
 | Syntax check | Compile > Syntax check, **Alt+F9** (GUI and terminal version): finds errors without building or running - `cargo check` for projects, `rustc --emit=metadata` for single Rust files, the syntax parse for Python; errors go to the Messages panel and the cursor jumps to the first. Options > Check before run (GUI) makes F9 / F5 run it first and stop on errors |
 | Debugger | Debug menu with Turbo Pascal keys: Ctrl+F8 breakpoint, F7 trace into, F8 step over, Shift+F8 step out, F4 go to cursor, Shift+F5 debug run, Ctrl+F7 watch, Ctrl+F2 reset. Rust through `gdb -i dap` (gdb 14+), Python through debugpy. Breakpoints and the execution line are colored in the editor; the debug panel shows watches, arguments and locals, and the call stack |
 | Terminal version | `rust-ide-tui` (ratatui + crossterm): Turbo colors, block cursor, menus with hotkeys, F1 help, windows, find / search again / go to line, F9 compile with messages, F5 runs the program in the terminal (user screen, Alt+F5), open-file dialog. Shares the build runner, search and lexers with the GUI through the library crate |
@@ -31,28 +32,17 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 
 | # | Item | Effort |
 |---|---|---|
-| 1 | Font size setting | M |
-| 2 | Vim mode, more commands | M |
-| 3 | New project from templates | M |
-| 4 | Terminal version: the rest | L |
-| 5 | C# support | L |
+| 1 | Vim mode, more commands | M |
+| 2 | New project from templates | M |
+| 3 | Terminal version: the rest | L |
+| 4 | C# support | L |
 
-### 1. Font size setting - M
-- **Options > Font size...** in the GUI, plus keys: Ctrl+= larger, Ctrl+- smaller, Ctrl+0 back
-  to the default. Applies to the editor, menus, panels and dialogs together.
-- Remembered between sessions in the settings file (`font_size=16`), with a sensible range
-  (for example 10 to 32).
-- Why medium: iced fixes its default text size when the program starts, so a live change means
-  giving every piece of text (and the block cursor's measurements) one shared size value.
-- The terminal version uses the terminal's own font; its Options menu can say so and point to
-  the terminal's zoom (usually Ctrl+= / Ctrl+-).
-
-### 2. Vim mode, more commands - M
+### 1. Vim mode, more commands - M
 - Line-wise Visual mode (`V`), repeat (`.`), text objects (`ciw`, `di(`), `f`/`t` motions, marks,
   block cursor.
 - Pure logic in `src/vim.rs`, so it is tested with unit tests like the existing commands.
 
-### 3. New project from templates - M
+### 2. New project from templates - M
 - **File > New project...** dialog: choose the language (Rust or Python), a size
   (Simple, Low, Medium or Complex), a project name and a folder. The IDE generates a general
   starting template and opens its main file.
@@ -69,7 +59,7 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 - Templates should build and run with F5 straight away, and pass their own tests; all eight
   (4 sizes x 2 languages) are checked by automated tests and in CI.
 
-### 4. Terminal version: the rest - L
+### 3. Terminal version: the rest - L
 Suggested sub-steps, easiest first:
 1. Replace, mouse support (click to place the cursor, menus) and an Options menu (Check before run, window style, ...).
 2. Vim mode (reuse `src/vim.rs`).
@@ -78,7 +68,7 @@ Suggested sub-steps, easiest first:
 4. The debugger (breakpoints, F7/F8, watches panel).
 5. Markdown preview: a small renderer built on the `pulldown-cmark` parser (headings, bold, lists, code blocks as styled text).
 
-### 5. C# support (open-source tools only) - L
+### 4. C# support (open-source tools only) - L
 - **Compiler:** the open-source .NET SDK command line (MIT licensed, Roslyn compiler), current
   LTS release. F9 runs `dotnet build`, F5 runs `dotnet run`; errors come from the build output
   (`file(line,col): error CS0103: ...`) into the Messages panel. A single `.cs` file without a

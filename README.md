@@ -55,6 +55,7 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | Alt+1 ... Alt+9, Alt+0 | Go to window 1-9; Alt+0 lists the windows |
 | Alt+F3 | Close the window |
 | Alt+F6 / Alt+P | Markdown preview on / off (for `.md` files) |
+| Ctrl+= / Ctrl+- / Ctrl+0 | Font larger / smaller / default (window version; remembered) |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
 **Window style** (window version): **Options > Window style** (Alt+O, then L / H / T) chooses how open files are

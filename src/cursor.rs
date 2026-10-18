@@ -20,6 +20,7 @@ pub struct BlockCursor<'a, Message> {
     content: &'a text_editor::Content,
     color: Color,
     background: Color,
+    size: f32,
 }
 
 impl<'a, Message> BlockCursor<'a, Message> {
@@ -28,8 +29,9 @@ impl<'a, Message> BlockCursor<'a, Message> {
         content: &'a text_editor::Content,
         color: Color,
         background: Color,
+        size: f32,
     ) -> Self {
-        Self { editor: editor.into(), content, color, background }
+        Self { editor: editor.into(), content, color, background, size }
     }
 }
 
@@ -145,7 +147,7 @@ impl<Message> Widget<Message, Theme, Renderer> for BlockCursor<'_, Message> {
             .filter(|c| !c.is_control())
             .unwrap_or(' ');
 
-        let size = renderer.default_size();
+        let size = Pixels(self.size);
         let font = renderer.default_font();
         let measure = |content: &str| {
             <Renderer as text::Renderer>::Paragraph::with_text(text::Text {
