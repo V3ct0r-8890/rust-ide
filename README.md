@@ -54,7 +54,7 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | F6 / Shift+F6 | Next / previous window (open files are shown as tabs) |
 | Alt+1 ... Alt+9, Alt+0 | Go to window 1-9; Alt+0 lists the windows |
 | Alt+F3 | Close the window |
-| Alt+F6 / Alt+P | Markdown preview on / off (for `.md` files) |
+| Alt+F6 / Alt+P | Markdown preview on / off (for `.md` files), where Options > Preview in says |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Font larger / smaller / default (window version; remembered) |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
@@ -68,6 +68,11 @@ in every style, and the choice is remembered.
 rendered document next to the editor: headings, bold and italic, lists, quotes, tables, code blocks and links. It follows
 what you type and scrolls with the cursor; clicking a link opens web addresses in the browser and other `.md` / text files
 in a window. Images show only their description for now.
+
+**Where the preview opens** is chosen in **Options > Preview in** (Alt+O P cycles it; remembered):
+- *side by side* (default): next to the editor;
+- *a new tab*: Alt+F6 opens a `Preview name.md` tab after the file. It shows the text as it was when you selected the tab, and is read again each time you come back to it. Alt+F6 on the preview tab closes it and returns to the file; on the file it jumps to the open preview tab. The preview tab cannot be edited or saved;
+- *a new window*: Alt+F6 opens a separate OS window (move it to a second screen); it follows what you type in the active `.md` file. Alt+F6 or the window's close button closes it.
 
 **Starting without a file** (no file name on the command line): the IDE asks which language to use: Rust (.rs),
 Python (.py), or, for any other language, Text (.txt) or Markdown (.md). Press R / P / T / M or 1-4 (or click), Enter takes

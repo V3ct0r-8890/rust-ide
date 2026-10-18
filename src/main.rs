@@ -18,7 +18,7 @@ use iced::widget::{
     Space, button, checkbox, column, container, markdown, mouse_area, opaque, row, scrollable, stack, text,
     text_editor, text_input,
 };
-use iced::{Background, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
+use iced::{Background, Color, Element, Font, Length, Padding, Size, Subscription, Task, Theme, window};
 
 use highlight::{Lang, Mark, MarkKind};
 use platform::Os;
@@ -64,7 +64,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Window", "Alt+1 ... Alt+9", "Go to window 1-9"),
     ("Window", "Alt+0", "Window list (Window menu)"),
     ("Window", "Alt+F3", "Close the window (press twice to discard changes)"),
-    ("Window", "Alt+F6 / Alt+P", "Markdown preview next to the editor, for .md files (links open on click)"),
+    ("Window", "Alt+F6 / Alt+P", "Markdown preview of a .md file: beside it, in a tab or in a window (Alt+O P chooses)"),
     ("Edit", "Ctrl+Z / Ctrl+Y", "Undo / redo (Ctrl+Shift+Z also redoes)"),
     ("Edit", "Tab / Shift+Tab", "Indent / unindent"),
     ("Edit", "Ctrl+Space", "Code completion (also after . and ::)"),
@@ -154,9 +154,10 @@ fn main() -> iced::Result {
         unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
     }
 
-    iced::application(Ide::new, Ide::update, Ide::view)
+    // A daemon (not an application) so that the Markdown preview can open its own window.
+    iced::daemon(Ide::new, Ide::update, Ide::view)
         .title(Ide::title)
-        .theme(|_: &Ide| Theme::Dark)
+        .theme(|_: &Ide, _: window::Id| Theme::Dark)
         .subscription(Ide::subscription)
         .default_font(Font::MONOSPACE)
         .run()
@@ -268,6 +269,74 @@ impl WindowStyle {
     }
 }
 
+/// Where the Markdown preview is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PreviewMode {
+    /// Next to the editor, following what is typed.
+    #[default]
+    Side,
+    /// In a tab of its own (refreshed when the tab is selected).
+    Tab,
+    /// In a separate window, following what is typed.
+    Window,
+}
+
+impl PreviewMode {
+    fn setting(self) -> &'static str {
+        match self {
+            PreviewMode::Side => "side",
+            PreviewMode::Tab => "tab",
+            PreviewMode::Window => "window",
+        }
+    }
+
+    fn from_setting(value: Option<&str>) -> Self {
+        match value {
+            Some("tab") => PreviewMode::Tab,
+            Some("window") => PreviewMode::Window,
+            _ => PreviewMode::Side,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            PreviewMode::Side => "side by side",
+            PreviewMode::Tab => "a new tab",
+            PreviewMode::Window => "a new window",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            PreviewMode::Side => PreviewMode::Tab,
+            PreviewMode::Tab => PreviewMode::Window,
+            PreviewMode::Window => PreviewMode::Side,
+        }
+    }
+}
+
+/// Identifies a text window while it moves between the editor fields and the
+/// background list. A default value is a fresh, never used number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BufferId(u64);
+
+impl Default for BufferId {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        BufferId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+/// A window that shows the rendered Markdown of another window.
+#[derive(Debug, Clone)]
+struct PreviewTab {
+    source: BufferId,
+    /// The source's file name.
+    title: String,
+    /// Where relative links are resolved from.
+    dir: Option<PathBuf>,
+}
+
 /// Settings shown as [x] / [ ] in the Options menu.
 #[derive(Debug, Clone, Copy, Default)]
 struct Toggles {
@@ -275,6 +344,7 @@ struct Toggles {
     check_before: bool,
     window_style: WindowStyle,
     preview: bool,
+    preview_mode: PreviewMode,
 }
 
 /// Text size of the editor, the preview and the user screen, in points.
@@ -348,6 +418,7 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
                 let mark = if toggles.window_style == style { "(*)" } else { "( )" };
                 items.push(item(format!("{:<19}{mark}", style.label()), hotkey, "", Message::WindowStyle(style)));
             }
+            items.push(item(format!("Preview in: {}", toggles.preview_mode.label()), 'p', "", Message::CyclePreviewMode));
             items
         }
         Menu::Window => {
@@ -522,6 +593,16 @@ struct Ide {
     persist_settings: bool,
     /// Markdown preview next to the editor (shown for Markdown windows only).
     preview: bool,
+    preview_mode: PreviewMode,
+    /// The OS window of the program, and of the preview when it has its own.
+    main_window: Option<window::Id>,
+    preview_window: Option<window::Id>,
+    /// The identity of the active text window.
+    buffer_id: BufferId,
+    /// Set when the active window is a preview tab.
+    preview_tab: Option<PreviewTab>,
+    /// Where the links of the shown preview are resolved from.
+    preview_dir: Option<PathBuf>,
     preview_content: markdown::Content,
     /// The text `preview_content` was made from.
     preview_source: String,
@@ -584,6 +665,8 @@ struct LanguageDialog {
 /// state lives directly in `Ide` (content, path, modified, undo, ...).
 #[derive(Default)]
 struct Buffer {
+    id: BufferId,
+    preview: Option<PreviewTab>,
     content: text_editor::Content,
     path: Option<PathBuf>,
     /// Type chosen for a window that has no file name yet.
@@ -653,6 +736,9 @@ enum Message {
     NewFileType(usize),
     WindowStyle(WindowStyle),
     TogglePreview,
+    CyclePreviewMode,
+    WindowOpened,
+    WindowClosed(window::Id),
     FontLarger,
     FontSmaller,
     FontDefault,
@@ -697,6 +783,7 @@ impl Ide {
         if platform::read_setting("vim").as_deref() == Some("true") {
             ide.vim = Some(vim::Vim::default());
         }
+        ide.preview_mode = PreviewMode::from_setting(platform::read_setting("preview_mode").as_deref());
         ide.check_at_startup =
             platform::read_setting("check_dependencies").as_deref() != Some("false");
         // Each file on the command line opens in its own window.
@@ -730,7 +817,9 @@ impl Ide {
             Task::none()
         };
         // Like Turbo Pascal, start with the cursor in the editor, ready to type.
-        (ide, Task::batch([check, iced::widget::operation::focus(EDITOR)]))
+        let (main, open_main) = window::open(window::Settings::default());
+        ide.main_window = Some(main);
+        (ide, Task::batch([open_main.map(|_| Message::WindowOpened), check, iced::widget::operation::focus(EDITOR)]))
     }
 
     /// Saves a setting for next time, but only in the real program: `Ide::default()`
@@ -768,11 +857,18 @@ impl Ide {
             vim: self.vim.is_some(),
             check_before: self.check_before,
             window_style: self.window_style,
-            preview: self.preview,
+            preview: self.preview_shown(),
+            preview_mode: self.preview_mode,
         }
     }
 
-    fn title(&self) -> String {
+    fn title(&self, window: window::Id) -> String {
+        if Some(window) == self.preview_window {
+            return "Markdown preview - Rust IDE".into();
+        }
+        if let Some(tab) = &self.preview_tab {
+            return format!("Preview {} - Rust IDE", tab.title);
+        }
         let name = self
             .path
             .as_deref()
@@ -803,7 +899,8 @@ impl Ide {
             }) => Some(Message::Escape),
             _ => None,
         });
-        Subscription::batch([keys, escape, Subscription::run(lsp::connect).map(Message::Lsp)])
+        let closed = window::close_events().map(Message::WindowClosed);
+        Subscription::batch([keys, escape, closed, Subscription::run(lsp::connect).map(Message::Lsp)])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -812,6 +909,33 @@ impl Ide {
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
+        // A preview tab has no text to edit, save or build.
+        if self.preview_tab.is_some()
+            && matches!(
+                message,
+                Message::Edit(_)
+                    | Message::Vim(_)
+                    | Message::Save
+                    | Message::SaveAs
+                    | Message::Compile
+                    | Message::Run
+                    | Message::RunExternal
+                    | Message::SyntaxCheck
+                    | Message::Undo
+                    | Message::Redo
+                    | Message::OpenSearch(_)
+                    | Message::ReplaceOne
+                    | Message::ReplaceAll
+                    | Message::ToggleBreakpoint
+                    | Message::DebugRun
+                    | Message::DebugStep(_)
+                    | Message::GoToCursor
+                    | Message::TriggerCompletion
+            )
+        {
+            self.status = "This is a preview tab; press Alt+F6 to go back to the file".into();
+            return Task::none();
+        }
         // A command closes an open menu; navigation and background events do not.
         let keeps_menu = matches!(
             message,
@@ -872,15 +996,26 @@ impl Ide {
             Message::FontLarger => self.set_font_size(self.font_size() + 1),
             Message::FontSmaller => self.set_font_size(self.font_size() - 1),
             Message::FontDefault => self.set_font_size(FONT_DEFAULT),
-            Message::TogglePreview => {
-                if !self.is_markdown() {
-                    self.status = "The preview is for Markdown (.md) files".into();
+            Message::TogglePreview => self.toggle_preview(),
+            Message::CyclePreviewMode => {
+                self.preview_mode = self.preview_mode.next();
+                self.preview = false;
+                self.status = format!("Markdown preview opens {}", self.preview_mode.label());
+                self.save_setting("preview_mode", self.preview_mode.setting());
+                let close = self.preview_window.take().map_or_else(Task::none, window::close);
+                Task::batch([close, iced::widget::operation::focus(EDITOR)])
+            }
+            Message::WindowOpened => Task::none(),
+            Message::WindowClosed(id) => {
+                if Some(id) == self.main_window {
+                    iced::exit()
                 } else {
-                    self.preview = !self.preview;
-                    self.status = format!("Markdown preview {}", if self.preview { "on" } else { "off" });
+                    if Some(id) == self.preview_window {
+                        self.preview_window = None;
+                        self.status = "Markdown preview window closed".into();
+                    }
+                    Task::none()
                 }
-                // The layout changes, which makes the editor lose the keyboard focus.
-                iced::widget::operation::focus(EDITOR)
             }
             Message::PreviewLink(url) => {
                 self.open_link(&url);
@@ -1394,15 +1529,18 @@ impl Ide {
 
     /// Window names in order, with `*` for unsaved changes.
     fn window_names(&self) -> Vec<String> {
-        let name = |path: &Option<PathBuf>, ext: Option<&'static str>, modified: bool| {
+        let name = |path: &Option<PathBuf>, ext: Option<&'static str>, modified: bool, tab: &Option<PreviewTab>| {
+            if let Some(tab) = tab {
+                return format!("Preview {}", tab.title);
+            }
             let file = path
                 .as_deref()
                 .and_then(Path::file_name)
                 .map_or(filetype::untitled_name(ext), |n| n.to_string_lossy().into_owned());
             if modified { format!("{file}*") } else { file }
         };
-        let mut names: Vec<String> = self.background.iter().map(|b| name(&b.path, b.ext, b.modified)).collect();
-        names.insert(self.active, name(&self.path, self.untitled_ext, self.modified));
+        let mut names: Vec<String> = self.background.iter().map(|b| name(&b.path, b.ext, b.modified, &b.preview)).collect();
+        names.insert(self.active, name(&self.path, self.untitled_ext, self.modified, &self.preview_tab));
         names
     }
 
@@ -1492,13 +1630,15 @@ impl Ide {
 
     /// An untitled, unchanged, empty window that a file can simply replace.
     fn is_blank_window(&self) -> bool {
-        self.path.is_none() && !self.modified && self.content.text().trim().is_empty()
+        self.path.is_none() && self.preview_tab.is_none() && !self.modified && self.content.text().trim().is_empty()
     }
 
     /// Moves the active window's state out of the editor fields.
     fn take_active(&mut self) -> Buffer {
         self.undo_group = false;
         Buffer {
+            id: std::mem::take(&mut self.buffer_id),
+            preview: self.preview_tab.take(),
             content: std::mem::take(&mut self.content),
             path: self.path.take(),
             ext: self.untitled_ext.take(),
@@ -1511,6 +1651,8 @@ impl Ide {
     }
 
     fn put_active(&mut self, buffer: Buffer) {
+        self.buffer_id = buffer.id;
+        self.preview_tab = buffer.preview;
         self.content = buffer.content;
         self.path = buffer.path;
         self.untitled_ext = buffer.ext;
@@ -1523,6 +1665,7 @@ impl Ide {
         self.message_index = None;
         self.refresh_search_marks();
         self.lsp_sync_doc();
+        self.refresh_preview_tab();
     }
 
     /// Opens `buffer` in a new window right after the active one.
@@ -1588,6 +1731,25 @@ impl Ide {
         self.lsp_sync_doc();
         self.status = format!("Opened {}", path.display());
         true
+    }
+
+    /// The window position of the background list entry `position`.
+    fn window_position(&self, position: usize) -> usize {
+        // Background order skips the active window.
+        if position >= self.active { position + 1 } else { position }
+    }
+
+    fn index_of_id(&self, id: BufferId) -> Option<usize> {
+        if self.buffer_id == id {
+            return Some(self.active);
+        }
+        self.background.iter().position(|b| b.id == id).map(|p| self.window_position(p))
+    }
+
+    /// The preview tab that shows window `source`, if one is open.
+    fn find_preview_tab(&self, source: BufferId) -> Option<usize> {
+        let position = self.background.iter().position(|b| b.preview.as_ref().is_some_and(|t| t.source == source))?;
+        Some(self.window_position(position))
     }
 
     fn window_index_of(&self, path: &Path) -> Option<usize> {
@@ -1812,16 +1974,112 @@ impl Ide {
         matches!(ext.as_deref(), Some("md" | "markdown"))
     }
 
+    /// The preview is drawn next to the editor.
     fn preview_visible(&self) -> bool {
-        self.preview && self.is_markdown()
+        self.preview_mode == PreviewMode::Side && self.preview && self.is_markdown()
+    }
+
+    /// The active Markdown window is being previewed beside it or in the
+    /// preview window, so the preview has to follow it.
+    fn preview_live(&self) -> bool {
+        self.is_markdown()
+            && match self.preview_mode {
+                PreviewMode::Side => self.preview,
+                PreviewMode::Window => self.preview_window.is_some(),
+                PreviewMode::Tab => false,
+            }
+    }
+
+    /// For the [x] / [ ] of the Window menu.
+    fn preview_shown(&self) -> bool {
+        match self.preview_mode {
+            PreviewMode::Side => self.preview,
+            PreviewMode::Tab => self.preview_tab.is_some() || self.find_preview_tab(self.buffer_id).is_some(),
+            PreviewMode::Window => self.preview_window.is_some(),
+        }
+    }
+
+    /// Alt+F6: shows or hides the preview where the Options say.
+    fn toggle_preview(&mut self) -> Task<Message> {
+        let focus = iced::widget::operation::focus(EDITOR);
+        match self.preview_mode {
+            PreviewMode::Side => {
+                if !self.is_markdown() {
+                    self.status = "The preview is for Markdown (.md) files".into();
+                } else {
+                    self.preview = !self.preview;
+                    self.status = format!("Markdown preview {}", if self.preview { "on" } else { "off" });
+                }
+                // The layout changes, which makes the editor lose the keyboard focus.
+                focus
+            }
+            PreviewMode::Tab => {
+                if let Some(tab) = &self.preview_tab {
+                    // On the preview tab: close it and go back to the file.
+                    let source = tab.source;
+                    self.close_window();
+                    if let Some(index) = self.index_of_id(source) {
+                        let _ = self.select_window(index);
+                    }
+                    self.status = "Markdown preview tab closed".into();
+                } else if !self.is_markdown() {
+                    self.status = "The preview is for Markdown (.md) files".into();
+                } else if let Some(index) = self.find_preview_tab(self.buffer_id) {
+                    let _ = self.select_window(index);
+                    self.status = "Markdown preview tab (Alt+F6 closes it)".into();
+                } else {
+                    let tab = PreviewTab {
+                        source: self.buffer_id,
+                        title: self.window_names()[self.active].trim_end_matches('*').to_string(),
+                        dir: self.path.as_deref().and_then(Path::parent).map(Path::to_path_buf),
+                    };
+                    self.open_window(Buffer { preview: Some(tab), ..Buffer::default() });
+                    self.status = "Markdown preview tab (Alt+F6 closes it)".into();
+                }
+                focus
+            }
+            PreviewMode::Window => {
+                if let Some(id) = self.preview_window.take() {
+                    self.status = "Markdown preview window closed".into();
+                    return window::close(id);
+                }
+                if !self.is_markdown() {
+                    self.status = "The preview is for Markdown (.md) files".into();
+                    return focus;
+                }
+                let settings = window::Settings { size: Size::new(760.0, 840.0), ..window::Settings::default() };
+                let (id, open) = window::open(settings);
+                self.preview_window = Some(id);
+                self.status = "Markdown preview window opened (Alt+F6 closes it)".into();
+                Task::batch([open.map(|_| Message::WindowOpened), focus])
+            }
+        }
+    }
+
+    /// Reads the source window's text again when the preview tab becomes the active window.
+    fn refresh_preview_tab(&mut self) {
+        let Some(tab) = &self.preview_tab else { return };
+        let text = match self.background.iter().find(|b| b.id == tab.source) {
+            Some(source) => source.content.text(),
+            None => "The file of this preview is closed.".into(),
+        };
+        self.preview_dir = tab.dir.clone();
+        if text != self.preview_source {
+            self.preview_content = markdown::Content::parse(&text);
+            self.preview_source = text;
+        }
     }
 
     /// Re-reads the text when it changed and scrolls the preview to where the
     /// cursor is, so it follows what is being edited.
     fn sync_preview(&mut self) -> Task<Message> {
         use iced::widget::scrollable::RelativeOffset;
-        if !self.preview_visible() {
+        if !self.preview_live() {
             return Task::none();
+        }
+        let dir = self.path.as_deref().and_then(Path::parent);
+        if self.preview_dir.as_deref() != dir {
+            self.preview_dir = dir.map(Path::to_path_buf);
         }
         let text = self.content.text();
         if text != self.preview_source {
@@ -1839,7 +2097,7 @@ impl Ide {
     }
 
     fn open_link(&mut self, url: &str) {
-        let dir = self.path.as_deref().and_then(Path::parent);
+        let dir = self.preview_dir.as_deref().or_else(|| self.path.as_deref().and_then(Path::parent));
         match classify_link(url, dir) {
             LinkTarget::Web(url) => {
                 self.status = match platform::open_url(&url) {
@@ -2720,7 +2978,14 @@ impl Ide {
 
     // ----- View -----
 
-    fn view(&self) -> Element<'_, Message> {
+    fn view(&self, window: window::Id) -> Element<'_, Message> {
+        if Some(window) == self.preview_window {
+            return self.preview_pane();
+        }
+        self.main_view()
+    }
+
+    fn main_view(&self) -> Element<'_, Message> {
         let menu_bar = container(row(MENUS.iter().map(|&menu| {
             let title = MENU_TITLES[menu.index()];
             let open = self.menu == Some(menu);
@@ -2793,7 +3058,9 @@ impl Ide {
         if let Some(bar) = &self.search {
             layout = layout.push(self.search_bar(bar));
         }
-        let editor: Element<'_, Message> = if self.preview_visible() {
+        let editor: Element<'_, Message> = if self.preview_tab.is_some() {
+            self.preview_pane()
+        } else if self.preview_visible() {
             row![editor, self.preview_pane()].spacing(2).height(Length::Fill).into()
         } else {
             editor.into()
@@ -4064,7 +4331,7 @@ mod language_tests {
         assert_eq!(ide.untitled_ext, Some("py"));
         assert_eq!(ide.lang(), Lang::Python);
         assert_eq!(ide.window_count(), 1, "the empty start window is reused");
-        assert_eq!(ide.title(), "NONAME.PY - Rust IDE");
+        assert_eq!(ide.title(window::Id::unique()), "NONAME.PY - Rust IDE");
         assert_eq!(ide.suggested_name(), "NONAME.PY");
     }
 
@@ -4075,7 +4342,7 @@ mod language_tests {
         let _ = ide.ask_language(false);
         send(&mut ide, [Message::Nav(NavKey::Char('m'))]);
         assert_eq!((ide.untitled_ext, ide.lang()), (Some("md"), Lang::Plain));
-        assert_eq!(ide.title(), "NONAME.MD - Rust IDE");
+        assert_eq!(ide.title(window::Id::unique()), "NONAME.MD - Rust IDE");
 
         send(&mut ide, [Message::New, Message::Nav(NavKey::Char('3'))]);
         assert_eq!(ide.untitled_ext, Some("txt"));
@@ -4158,7 +4425,7 @@ mod language_tests {
         assert_eq!(ide.lang(), Lang::Rust, "the file name beats the chosen type");
         assert_eq!(ide.untitled_ext, None);
         ide.open_path(&txt);
-        assert_eq!((ide.lang(), ide.title().as_str()), (Lang::Plain, "notes.txt - Rust IDE"));
+        assert_eq!((ide.lang(), ide.title(window::Id::unique()).as_str()), (Lang::Plain, "notes.txt - Rust IDE"));
         ide.open_path(&md);
         assert_eq!((ide.lang(), ide.content.text().as_str()), (Lang::Plain, "# Title\n"));
         assert_eq!(ide.suggested_name(), "readme.md");
@@ -4283,7 +4550,7 @@ mod window_style_tests {
             for count in [1, 3] {
                 let mut ide = ide_with_windows(count);
                 ide.window_style = style;
-                let _ = ide.view();
+                let _ = ide.view(window::Id::unique());
                 let _ = ide.window_tabs();
                 let _ = ide.window_list();
                 let _ = ide.legacy_title();
@@ -4389,7 +4656,7 @@ mod preview_tests {
             .collect();
         assert_eq!(kinds, ["heading", "paragraph", "list"]);
         assert_eq!(ide.preview_source, ide.content.text());
-        let _ = ide.view();
+        let _ = ide.view(window::Id::unique());
     }
 
     #[test]
@@ -4404,7 +4671,7 @@ mod preview_tests {
         send(&mut ide, [Message::SelectWindow(0)]);
         assert!(ide.preview_visible());
         assert_eq!(ide.preview_content.items().len(), 1, "the text is read again for this window");
-        let _ = ide.view();
+        let _ = ide.view(window::Id::unique());
     }
 
     #[test]
@@ -4528,7 +4795,7 @@ mod font_tests {
         assert_eq!(ide.font_size(), FONT_MIN);
         let _ = ide.update(Message::FontDefault);
         assert_eq!(ide.font_size(), FONT_DEFAULT);
-        let _ = ide.view();
+        let _ = ide.view(window::Id::unique());
     }
 
     #[test]
@@ -4564,5 +4831,133 @@ mod font_tests {
         assert_eq!(platform::read_setting("font_size").as_deref(), Some("17"));
         let _ = ide.update(Message::FontDefault);
         assert_eq!(platform::read_setting("font_size").as_deref(), Some("16"));
+    }
+}
+
+#[cfg(test)]
+mod preview_place_tests {
+    use super::*;
+
+    fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
+        for message in messages {
+            let _ = ide.update(message);
+        }
+    }
+
+    fn type_text(ide: &mut Ide, text: &str) {
+        for c in text.chars() {
+            send(ide, [Message::Edit(Action::Edit(Edit::Insert(c)))]);
+        }
+    }
+
+    fn markdown_window(mode: PreviewMode) -> Ide {
+        let mut ide = Ide::default();
+        ide.untitled_ext = Some("md");
+        ide.preview_mode = mode;
+        type_text(&mut ide, "# Hi");
+        ide
+    }
+
+    #[test]
+    fn the_mode_setting_round_trips_and_cycles() {
+        for mode in [PreviewMode::Side, PreviewMode::Tab, PreviewMode::Window] {
+            assert_eq!(PreviewMode::from_setting(Some(mode.setting())), mode);
+        }
+        assert_eq!(PreviewMode::from_setting(None), PreviewMode::Side);
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::CyclePreviewMode]);
+        assert_eq!(ide.preview_mode, PreviewMode::Tab);
+        send(&mut ide, [Message::CyclePreviewMode, Message::CyclePreviewMode]);
+        assert_eq!(ide.preview_mode, PreviewMode::Side);
+        let items = menu_items(Menu::Options, ide.toggles(), &[], 0);
+        assert!(items.iter().any(|i| i.label == "Preview in: side by side" && i.message.is_some()));
+    }
+
+    #[test]
+    fn a_preview_tab_opens_follows_the_source_and_closes() {
+        let mut ide = markdown_window(PreviewMode::Tab);
+        send(&mut ide, [Message::TogglePreview]);
+        assert_eq!(ide.window_count(), 2);
+        assert_eq!(ide.active, 1);
+        assert!(ide.preview_tab.is_some());
+        assert_eq!(ide.window_names()[1], "Preview NONAME.MD");
+        assert_eq!(ide.preview_source, "# Hi");
+        assert!(ide.toggles().preview, "the Window menu shows the preview as on");
+
+        // Nothing can be edited or saved in the preview tab.
+        send(&mut ide, [Message::Edit(Action::Edit(Edit::Insert('x'))), Message::Save]);
+        assert_eq!(ide.content.text(), "");
+        assert!(ide.status.starts_with("This is a preview tab"));
+
+        // The source changes; selecting the preview tab shows the new text.
+        send(&mut ide, [Message::SelectWindow(0)]);
+        type_text(&mut ide, " there");
+        send(&mut ide, [Message::SelectWindow(1)]);
+        assert_eq!(ide.preview_source, "# Hi there");
+
+        // Alt+F6 inside the preview closes it and returns to the file.
+        send(&mut ide, [Message::TogglePreview]);
+        assert_eq!(ide.window_count(), 1);
+        assert_eq!(ide.content.text(), "# Hi there");
+        assert!(ide.preview_tab.is_none());
+
+        // A second time it makes a new tab; with one open, it just goes there.
+        send(&mut ide, [Message::TogglePreview, Message::SelectWindow(0), Message::TogglePreview]);
+        assert_eq!(ide.window_count(), 2);
+        assert_eq!(ide.active, 1);
+    }
+
+    #[test]
+    fn the_tab_is_only_for_markdown_and_is_never_reused_as_a_blank_file() {
+        let mut ide = Ide::default();
+        ide.preview_mode = PreviewMode::Tab;
+        send(&mut ide, [Message::TogglePreview]);
+        assert_eq!(ide.window_count(), 1);
+        assert_eq!(ide.status, "The preview is for Markdown (.md) files");
+
+        let mut ide = markdown_window(PreviewMode::Tab);
+        send(&mut ide, [Message::TogglePreview]);
+        assert!(!ide.is_blank_window(), "a preview tab is not a blank window");
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("preview-place");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("other.md");
+        std::fs::write(&path, "other\n").unwrap();
+        ide.open_path(&path);
+        assert_eq!(ide.window_count(), 3, "the file got its own window");
+        assert!(ide.preview_tab.is_none());
+    }
+
+    #[test]
+    fn the_preview_window_opens_follows_and_closes() {
+        let mut ide = markdown_window(PreviewMode::Window);
+        send(&mut ide, [Message::TogglePreview]);
+        let id = ide.preview_window.expect("window requested");
+        assert!(ide.preview_live());
+        assert_eq!(ide.preview_source, "# Hi");
+        assert!(ide.toggles().preview);
+        type_text(&mut ide, "!");
+        assert_eq!(ide.preview_source, "# Hi!", "follows what is typed");
+        assert_eq!(ide.title(id), "Markdown preview - Rust IDE");
+        assert!(!ide.preview_visible(), "nothing is drawn beside the editor");
+
+        // The user closes the window with its X.
+        send(&mut ide, [Message::WindowClosed(id)]);
+        assert!(ide.preview_window.is_none());
+        assert!(!ide.preview_live());
+
+        // Alt+F6 opens it again, and again closes it.
+        send(&mut ide, [Message::TogglePreview]);
+        assert!(ide.preview_window.is_some());
+        send(&mut ide, [Message::TogglePreview]);
+        assert!(ide.preview_window.is_none());
+    }
+
+    #[test]
+    fn changing_the_mode_closes_the_preview_window() {
+        let mut ide = markdown_window(PreviewMode::Window);
+        send(&mut ide, [Message::TogglePreview, Message::CyclePreviewMode]);
+        assert_eq!(ide.preview_mode, PreviewMode::Side);
+        assert!(ide.preview_window.is_none());
+        assert!(!ide.preview);
     }
 }
