@@ -26,11 +26,23 @@ const CHOSEN: Style = Style::new().fg(Color::Black).bg(GREEN);
 const EDITOR: Style = Style::new().fg(Color::Rgb(255, 255, 85)).bg(BLUE);
 const CURSOR: Style = Style::new().fg(Color::Rgb(0, 0, 170)).bg(Color::Rgb(255, 255, 85));
 const PANEL: Style = Style::new().fg(Color::Black).bg(TEAL);
+const GUTTER: Style = Style::new().fg(Color::Rgb(160, 175, 255)).bg(DARK_BLUE);
 const MESSAGES_HEIGHT: u16 = 6;
 
 /// Rows used by everything except the editor (for scrolling and paging).
 pub fn editor_area(app: &App, screen: Rect) -> Rect {
-    layout(app, screen)[2]
+    text_area(app, layout(app, screen)[2])
+}
+
+/// Width of the line number column (digits plus a space), 0 when it is off.
+fn gutter_width(app: &App) -> u16 {
+    if app.line_numbers { app.buffer().lines.len().to_string().len() as u16 + 1 } else { 0 }
+}
+
+/// The part of the editor area that holds text, right of the line numbers.
+fn text_area(app: &App, area: Rect) -> Rect {
+    let gutter = gutter_width(app).min(area.width.saturating_sub(1));
+    Rect::new(area.x + gutter, area.y, area.width - gutter, area.height)
 }
 
 fn layout(app: &App, screen: Rect) -> [Rect; 5] {
@@ -162,8 +174,19 @@ fn color(highlight: Highlight) -> Color {
     }
 }
 
-fn draw_editor(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_editor(frame: &mut Frame, app: &App, full: Rect) {
     let buffer = app.buffer();
+    let area = text_area(app, full);
+    if area.x > full.x {
+        let digits = (area.x - full.x) as usize - 1;
+        let numbers: Vec<Line> = (buffer.scroll..buffer.scroll + area.height as usize)
+            .map(|row| {
+                let text = if row < buffer.lines.len() { format!("{:>digits$} ", row + 1) } else { " ".repeat(digits + 1) };
+                Line::styled(text, if row == buffer.row { GUTTER.fg(Color::White) } else { GUTTER })
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(numbers).style(GUTTER), Rect::new(full.x, full.y, area.x - full.x, full.height));
+    }
     let mut highlighter = LineHighlighter::new(buffer.lang());
     let width = area.width as usize;
     // The cursor is drawn as a colored block (the terminal's own cursor color
@@ -346,6 +369,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+F", "Find"),
     ("Ctrl+H / Ctrl+R", "Replace all (asks for the text, then the replacement; Ctrl+Z undoes)"),
     ("Ctrl+L", "Search again"),
+    ("Options > Line numbers", "Show or hide the line numbers (remembered)"),
     ("Options > Check before run", "F9 / F5 look for errors first and stop if there are any (remembered)"),
     ("Mouse", "Click a menu, a menu item, a tab or a place in the text; the wheel moves the cursor (start with --no-mouse to select text with the mouse)"),
     ("Ctrl+G", "Go to line number"),
@@ -516,6 +540,19 @@ mod tests {
             assert!(text.contains(expected), "missing {expected:?} in
 {text}");
         }
+    }
+
+    #[test]
+    fn draws_line_numbers_when_on() {
+        let mut app = App::new(&[]);
+        for c in ['a', '\n', 'b', '\n', 'c'] {
+            if c == '\n' { app.buffer_mut().newline() } else { app.buffer_mut().insert_char(c) }
+        }
+        assert!(screen(&app, 40, 8).lines().nth(1).unwrap().starts_with('a'));
+        app.line_numbers = true;
+        let text = screen(&app, 40, 8);
+        let rows: Vec<&str> = text.lines().collect();
+        assert!(rows[1].starts_with("1 a") && rows[2].starts_with("2 b") && rows[3].starts_with("3 c"), "{text}");
     }
 
     #[test]

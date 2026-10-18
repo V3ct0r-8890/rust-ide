@@ -67,6 +67,7 @@ pub enum Action {
     Replace,
     GoToLine,
     ToggleCheckBefore,
+    ToggleLineNumbers,
     Run,
     UserScreen,
     Compile,
@@ -199,6 +200,8 @@ pub struct App {
     replace_query: String,
     /// Options > Check before run: F5 / F9 look for errors first.
     pub check_before: bool,
+    /// Options > Line numbers: a column of line numbers left of the text.
+    pub line_numbers: bool,
     /// After a check that finds no errors: build (and run when true).
     then_build: Option<bool>,
     /// A pending "press again to discard" for this action.
@@ -219,6 +222,7 @@ impl App {
             last_query: String::new(),
             replace_query: String::new(),
             check_before: false,
+            line_numbers: false,
             then_build: None,
             confirm: None,
             last_run: None,
@@ -268,12 +272,20 @@ impl App {
                 item("Next message", 'n', "Alt+F8", Action::NextMessage),
                 item("Previous message", 'p', "Alt+F7", Action::PrevMessage),
             ],
-            Menu::Options => vec![item(
-                if self.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
-                'c',
-                "",
-                Action::ToggleCheckBefore,
-            )],
+            Menu::Options => vec![
+                item(
+                    if self.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
+                    'c',
+                    "",
+                    Action::ToggleCheckBefore,
+                ),
+                item(
+                    if self.line_numbers { "Line numbers       [x]" } else { "Line numbers       [ ]" },
+                    'l',
+                    "",
+                    Action::ToggleLineNumbers,
+                ),
+            ],
             Menu::Window => {
                 let mut items = vec![
                     item("Next", 'n', "F6", Action::NextWindow),
@@ -481,6 +493,11 @@ impl App {
             Action::Find => self.mode = Mode::Prompt { kind: PromptKind::Find, input: self.last_query.clone() },
             Action::FindNext => self.find_next(),
             Action::Replace => self.mode = Mode::Prompt { kind: PromptKind::ReplaceFind, input: self.last_query.clone() },
+            Action::ToggleLineNumbers => {
+                self.line_numbers = !self.line_numbers;
+                let _ = rust_ide::platform::write_setting("line_numbers", if self.line_numbers { "true" } else { "false" });
+                self.status = format!("Line numbers {}", if self.line_numbers { "on" } else { "off" });
+            }
             Action::ToggleCheckBefore => {
                 self.check_before = !self.check_before;
                 let _ = rust_ide::platform::write_setting("check_before", if self.check_before { "true" } else { "false" });
@@ -1400,5 +1417,29 @@ three");
         // The wheel moves the cursor.
         app.mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: 5, row: 5, modifiers: KeyModifiers::NONE }, screen);
         assert_eq!(app.buffer().row, 2);
+    }
+
+    #[test]
+    fn line_numbers_toggle_shift_the_text_and_clicks() {
+        let _settings = isolate_settings();
+        let screen = Rect::new(0, 0, 80, 24);
+        let mut app = App::new(&[]);
+        typed(&mut app, "one
+two
+three");
+        let before = crate::ui::editor_area(&app, screen);
+        app.act(Action::ToggleLineNumbers);
+        assert!(app.line_numbers);
+        assert_eq!(rust_ide::platform::read_setting("line_numbers").as_deref(), Some("true"));
+        let after = crate::ui::editor_area(&app, screen);
+        assert_eq!(after.x, before.x + 2, "one digit and a space");
+        // Clicking the third text column of line 1 lands on column 2 (the gutter is skipped).
+        app.mouse(click(after.x + 2, 1), screen);
+        assert_eq!((app.buffer().row, app.buffer().char_col()), (0, 2));
+        app.mouse(click(0, 1), screen);
+        assert_eq!(app.buffer().char_col(), 2, "a click in the numbers does nothing");
+        assert!(app.menu_items(Menu::Options)[1].label.contains("[x]"));
+        app.act(Action::ToggleLineNumbers);
+        assert_eq!(crate::ui::editor_area(&app, screen), before);
     }
 }

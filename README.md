@@ -110,6 +110,7 @@ like Turbo Pascal's user screen (Alt+F5 shows it again).
 
 - **Replace** (Ctrl+H, or Ctrl+R because many terminals send Ctrl+H as Backspace; Search > Replace...): asks for the text and then the replacement, replaces every match (case ignored, like Find) and Ctrl+Z undoes it in one step.
 - **Options > Check before run**: F9 / F5 first look for errors and stop if there are any (shared setting with the window version).
+- **Options > Line numbers** (Alt+O L): a column of line numbers left of the text; remembered. (The window version has no line numbers yet: its editor widget cannot show a gutter.)
 - **Mouse**: click a menu title, a menu item, a window tab or a place in the text; the wheel moves the cursor. Start with `--no-mouse` if you would rather select text with the terminal's own mouse selection.
 
 ```
