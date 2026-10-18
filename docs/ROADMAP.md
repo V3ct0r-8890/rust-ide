@@ -23,20 +23,66 @@ Last updated: 2026-10-17. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 
 ## Backlog
 
-In suggested order.
+Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = large.
 
-### 1. Terminal version: the rest
-- Live errors and completion (language servers), the debugger, Replace and Vim mode in `rust-ide-tui`.
-- Mouse support (click to place the cursor, menus).
+| # | Item | Effort |
+|---|---|---|
+| 1 | Syntax check key (Alt+F9) | S |
+| 2 | Window style: legacy / horizontal tabs / vertical tabs | S-M |
+| 3 | Font size setting | M |
+| 4 | Vim mode, more commands | M |
+| 5 | New project from templates | M |
+| 6 | Terminal version: the rest | L |
+| 7 | C# support | L |
 
-### 2. Vim mode, more commands
-- Line-wise Visual mode (`V`), repeat (`.`), text objects (`ciw`, `di(`), `f`/`t` motions, marks, block cursor.
+### 1. Syntax check key (Alt+F9) - S
+- **Compile > Syntax check**, key **Alt+F9**, in the GUI and the terminal version: checks the
+  current file for errors quickly, without building or running.
+  - Rust: `cargo check` (projects) or `rustc --emit=metadata` (single files): no machine code,
+    so much faster than a build.
+  - Python: the same syntax parse used before running today.
+  - C# (once item 7 exists): a build with no output, or the language server's errors.
+- Errors go to the Messages panel and the cursor jumps to the first one, like F9; on success
+  the status bar says "No syntax errors".
+- **Key change:** Alt+F9 is currently a second key for Compile. F9 stays Compile and Ctrl+F9
+  stays Run; Alt+F9 becomes Syntax check (the F1 help lists in `src/main.rs` and
+  `src/bin/rust-ide-tui/ui.rs` and the Compile menu change with it).
+- Optional setting **Check before compile/run** (Options menu): F9 and F5 run the syntax check
+  first and stop on errors, so a slow build or a run never starts with broken code.
 
-### 3. New project from templates
+### 2. Window style setting (GUI) - S-M
+- **Options > Window style** chooses how open files (buffer windows) are shown and selected:
+  - **Legacy (Turbo Pascal):** no tab strip. Windows are picked from the Window menu list
+    (Alt+0), with F6 / Shift+F6 and Alt+1-9, and the active window's number and name are shown
+    in a title line above the editor, like Turbo Pascal's numbered windows.
+  - **Horizontal tabs:** the current tab strip under the menu bar.
+  - **Vertical tabs:** a narrow list of open files on the left of the editor (number, name,
+    `*` for unsaved changes), clickable, with the active one highlighted.
+- The same keys work in every style; the choice is remembered in the settings file
+  (`window_style=legacy|horizontal|vertical`).
+- Later: a matching choice in the terminal version (legacy or horizontal tabs).
+
+### 3. Font size setting - M
+- **Options > Font size...** in the GUI, plus keys: Ctrl+= larger, Ctrl+- smaller, Ctrl+0 back
+  to the default. Applies to the editor, menus, panels and dialogs together.
+- Remembered between sessions in the settings file (`font_size=16`), with a sensible range
+  (for example 10 to 32).
+- Why medium: iced fixes its default text size when the program starts, so a live change means
+  giving every piece of text (and the block cursor's measurements) one shared size value.
+- The terminal version uses the terminal's own font; its Options menu can say so and point to
+  the terminal's zoom (usually Ctrl+= / Ctrl+-).
+
+### 4. Vim mode, more commands - M
+- Line-wise Visual mode (`V`), repeat (`.`), text objects (`ciw`, `di(`), `f`/`t` motions, marks,
+  block cursor.
+- Pure logic in `src/vim.rs`, so it is tested with unit tests like the existing commands.
+
+### 5. New project from templates - M
 - **File > New project...** dialog: choose the language (Rust or Python), a size
   (Simple, Low, Medium or Complex), a project name and a folder. The IDE generates a general
   starting template and opens its main file.
-- Proposed template contents (to be confirmed before implementing):
+- Template contents below are proposals; **each size is confirmed with you during design,
+  before it is built.**
 
 | Size | Rust | Python |
 |---|---|---|
@@ -45,9 +91,18 @@ In suggested order.
 | Medium | Library + binary crate, error handling, config file, integration tests, README | `pyproject.toml`, `src/` layout, `.venv` setup, pytest, lint settings, README |
 | Complex | Cargo workspace (core library, CLI, extra crates), tests, benchmarks, CI workflow | Multi-module `src/` package with CLI entry point, config, logging, tests, CI workflow |
 
-- Templates should build and run with F5 straight away, and pass their own tests.
+- Templates should build and run with F5 straight away, and pass their own tests; all eight
+  (4 sizes x 2 languages) are checked by automated tests and in CI.
 
-### 4. C# support (open-source tools only)
+### 6. Terminal version: the rest - L
+Suggested sub-steps, easiest first:
+1. Replace, and mouse support (click to place the cursor, menus).
+2. Vim mode (reuse `src/vim.rs`).
+3. Live errors and completion (language servers). Needs the terminal loop to wait for events
+   from the servers as well as keys, which is the main rework.
+4. The debugger (breakpoints, F7/F8, watches panel).
+
+### 7. C# support (open-source tools only) - L
 - **Compiler:** the open-source .NET SDK command line (MIT licensed, Roslyn compiler), current
   LTS release. F9 runs `dotnet build`, F5 runs `dotnet run`; errors come from the build output
   (`file(line,col): error CS0103: ...`) into the Messages panel. A single `.cs` file without a
@@ -63,41 +118,10 @@ In suggested order.
   `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed), Fedora/RHEL
   `sudo dnf install dotnet-sdk-10.0`; netcoredbg from its GitHub releases.
 - **Templates:** add C# to File > New project (`dotnet new console`, class library + tests,
-  solution with several projects), once item 3 exists.
-- Check before starting: the exact SDK and package names for each system, and whether
+  solution with several projects), once item 5 exists.
+- Why last: it adds a whole new toolchain on three systems, and netcoredbg is unproven here.
+  Check before starting: the exact SDK and package names for each system, and whether
   netcoredbg covers the needed features (breakpoints, stepping, locals) on Windows and Linux.
-
-### 5. Font size setting
-- **Options > Font size...** in the GUI, plus keys: Ctrl+= larger, Ctrl+- smaller, Ctrl+0 back
-  to the default. Applies to the editor, menus, panels and dialogs together.
-- Remembered between sessions in the settings file (`font_size=16`), with a sensible range
-  (for example 10 to 32).
-- The terminal version uses the terminal's own font; its Options menu can say so and point to
-  the terminal's zoom (usually Ctrl+= / Ctrl+-).
-
-### 6. Syntax check key (before compile and run)
-- A new **Compile > Syntax check** with its own key (proposed **Shift+F9**), in the GUI and the
-  terminal version: checks the current file for errors quickly, without building or running.
-  - Rust: `cargo check` (projects) or `rustc --emit=metadata` (single files): no machine code,
-    so much faster than a build.
-  - Python: the same syntax parse used before running today.
-  - C# (once item 4 exists): a build with no output, or the language server's errors.
-- Errors go to the Messages panel and the cursor jumps to the first one, like F9; on success
-  the status bar says "No syntax errors".
-- Optional setting **Check before compile/run** (Options menu): F9 and F5 run the syntax check
-  first and stop on errors, so a slow build or a run never starts with broken code.
-
-### 7. Window style setting (GUI)
-- **Options > Window style** chooses how open files (buffer windows) are shown and selected:
-  - **Legacy (Turbo Pascal):** no tab strip. Windows are picked from the Window menu list
-    (Alt+0), with F6 / Shift+F6 and Alt+1-9, and the active window's number and name are shown
-    in a title line above the editor, like Turbo Pascal's numbered windows.
-  - **Horizontal tabs:** the current tab strip under the menu bar.
-  - **Vertical tabs:** a narrow list of open files on the left of the editor (number, name,
-    `*` for unsaved changes), clickable, with the active one highlighted.
-- The same keys work in every style; the choice is remembered in the settings file
-  (`window_style=legacy|horizontal|vertical`).
-- Later: a matching choice in the terminal version (legacy or horizontal tabs).
 
 ## Known limitations
 
