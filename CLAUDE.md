@@ -52,7 +52,11 @@ A Turbo Pascal-style IDE for Rust and Python, with two front ends over one libra
   (character columns) and LSP (UTF-16, handled in `lsp.rs`). Lines may contain Thai text.
 - **Positioning the cursor:** `Content::move_to` with `selection: None` keeps an old selection,
   and a Move with any selection only collapses it. Use `vim::place(content, position)`.
-- Status bar text must be clipped, never allowed to push the right-hand fields off screen.
+- Status bar text must be clipped, never allowed to push the right-hand fields off screen, so
+  put the important words first.
+- **F9 compiles, Alt+F9 only checks** (`runner::check`: no program is produced; `main.rs`
+  `run_build` combines check and build for Options > Check before run). A run target never
+  comes from a check.
 - **Debugger:** `src/dap.rs` drives `gdb -i dap` (Rust, needs gdb 14+) and debugpy. gdb's built-in
   Python breaks when `MSYSTEM` (Git Bash/MSYS2), `PYTHONHOME` or `PYTHONPATH` are set, so they
   are removed for gdb. Live tests: `cargo test dap:: -- --ignored --test-threads=1`

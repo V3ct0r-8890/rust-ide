@@ -73,7 +73,8 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Search", "Enter", "In the Find box: next match (Previous is a button)"),
     ("Search", "Tab", "Next field in the search bar"),
     ("Search", "Alt+M", "Toggle match case"),
-    ("Compile", "F9 / Alt+F9", "Compile or check the current file"),
+    ("Compile", "F9", "Compile the current file (checks the syntax first when that option is on)"),
+    ("Compile", "Alt+F9", "Syntax check: find errors without building or running"),
     ("Compile", "Alt+F8 / Alt+F7", "Next / previous error or warning"),
     ("Run", "F5 / Ctrl+F9", "Save, compile and run"),
     ("Run", "Alt+F5", "Show / hide the Output window (User screen)"),
@@ -81,6 +82,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Run", "Enter", "In the Output window: send the typed input"),
     ("Options", "Alt+O D", "Dependencies: Up/Down, I install, C copy, G guide, R re-check, S startup check"),
     ("Options", "Alt+O V", "Vim mode on / off"),
+    ("Options", "Alt+O C", "Check the syntax before compile / run on / off"),
     ("Help", "F1", "This list (Up/Down, Page Up/Down scroll; Esc or F1 closes)"),
     ("Vim", "i a o O, Esc", "Insert mode, back to Normal"),
     ("Vim", "h j k l w b e 0 ^ $ gg G", "Motions (with counts)"),
@@ -217,7 +219,14 @@ fn item(label: impl Into<String>, hotkey: char, keys: &'static str, message: Mes
     MenuItem { label: label.into(), hotkey, keys, message: Some(message) }
 }
 
-fn menu_items(menu: Menu, vim_on: bool, windows: &[String], active: usize) -> Vec<MenuItem> {
+/// Settings shown as [x] / [ ] in the Options menu.
+#[derive(Debug, Clone, Copy, Default)]
+struct Toggles {
+    vim: bool,
+    check_before: bool,
+}
+
+fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -> Vec<MenuItem> {
     match menu {
         Menu::File => vec![
             item("New", 'n', "", Message::New),
@@ -244,6 +253,7 @@ fn menu_items(menu: Menu, vim_on: bool, windows: &[String], active: usize) -> Ve
         ],
         Menu::Compile => vec![
             item("Compile", 'c', "F9", Message::Compile),
+            item("Syntax check", 's', "Alt+F9", Message::SyntaxCheck),
             item("Next message", 'n', "Alt+F8", Message::NextMessage),
             item("Previous message", 'p', "Alt+F7", Message::PrevMessage),
         ],
@@ -261,7 +271,13 @@ fn menu_items(menu: Menu, vim_on: bool, windows: &[String], active: usize) -> Ve
         ],
         Menu::Options => vec![
             item("Dependencies...", 'd', "", Message::ShowDeps),
-            item(if vim_on { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
+            item(if toggles.vim { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
+            item(
+                if toggles.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
+                'c',
+                "",
+                Message::ToggleCheckBefore,
+            ),
         ],
         Menu::Window => {
             const ALT_KEYS: [&str; 9] = ["Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5", "Alt+6", "Alt+7", "Alt+8", "Alt+9"];
@@ -309,6 +325,8 @@ fn nav_key(key: &Key, modifiers: Modifiers, text: Option<&str>) -> Option<NavKey
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum AfterSave {
     Nothing,
+    /// Alt+F9: look for errors only.
+    Check,
     Compile,
     Run,
     RunExternal,
@@ -415,6 +433,8 @@ struct Ide {
     check_at_startup: bool,
     /// Vim emulation, when enabled in Options.
     vim: Option<vim::Vim>,
+    /// Run the syntax check first for compile and run; stop on errors.
+    check_before: bool,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     /// True while consecutive typing is being collected into one undo step.
@@ -500,7 +520,8 @@ enum Message {
     Exit,
     Compile,
     Run,
-    BuildFinished(BuildResult, AfterSave),
+    /// The bool says that only the syntax check ran.
+    BuildFinished(BuildResult, AfterSave, bool),
     JumpTo(usize),
     Lsp(lsp::Event),
     TriggerCompletion,
@@ -525,6 +546,8 @@ enum Message {
     Undo,
     Redo,
     ToggleVim,
+    ToggleCheckBefore,
+    SyntaxCheck,
     OpenSearch(SearchMode),
     SearchQuery(String),
     SearchReplacement(String),
@@ -556,6 +579,7 @@ impl Ide {
         let mut ide = Self::default();
         let os = Os::detect();
         ide.os = Some(os);
+        ide.check_before = platform::read_setting("check_before").as_deref() == Some("true");
         if platform::read_setting("vim").as_deref() == Some("true") {
             ide.vim = Some(vim::Vim::default());
         }
@@ -588,6 +612,10 @@ impl Ide {
         };
         // Like Turbo Pascal, start with the cursor in the editor, ready to type.
         (ide, Task::batch([check, iced::widget::operation::focus(EDITOR)]))
+    }
+
+    fn toggles(&self) -> Toggles {
+        Toggles { vim: self.vim.is_some(), check_before: self.check_before }
     }
 
     fn title(&self) -> String {
@@ -735,6 +763,7 @@ impl Ide {
                 iced::exit()
             }
             Message::Compile => self.save(AfterSave::Compile),
+            Message::SyntaxCheck => self.save(AfterSave::Check),
             Message::Run if self.debug.is_some() => {
                 self.debug_command(dap::Command::Continue);
                 Task::none()
@@ -801,9 +830,9 @@ impl Ide {
                 Task::none()
             }
             Message::RunExternal => self.save(AfterSave::RunExternal),
-            Message::BuildFinished(result, after) => {
+            Message::BuildFinished(result, after, checked_only) => {
                 self.building = false;
-                self.finish_build(result, after)
+                self.finish_build(result, after, checked_only)
             }
             Message::JumpTo(index) => {
                 if let Some(diagnostic) = self.panel_items().get(index).cloned() {
@@ -830,6 +859,15 @@ impl Ide {
             }
             Message::Redo => {
                 self.redo();
+                Task::none()
+            }
+            Message::ToggleCheckBefore => {
+                self.check_before = !self.check_before;
+                let on = self.check_before;
+                self.status = format!("Check before compile/run {}", if on { "on" } else { "off" });
+                if let Err(e) = platform::write_setting("check_before", if on { "true" } else { "false" }) {
+                    self.status = format!("Cannot save settings: {e}");
+                }
                 Task::none()
             }
             Message::ToggleVim => {
@@ -1559,7 +1597,7 @@ impl Ide {
 
     fn open_menu(&mut self, menu: Menu) -> Task<Message> {
         self.menu = Some(menu);
-        let items = menu_items(menu, self.vim.is_some(), &self.window_names(), self.active);
+        let items = menu_items(menu, self.toggles(), &self.window_names(), self.active);
         self.menu_item = items.iter().position(|i| i.message.is_some()).unwrap_or(0);
         // Arrow keys must reach the menu, not a text field.
         iced::widget::operation::focus(EDITOR)
@@ -1567,7 +1605,7 @@ impl Ide {
 
     fn pick_menu_item(&mut self, index: usize) -> Task<Message> {
         let Some(menu) = self.menu else { return Task::none() };
-        let message = menu_items(menu, self.vim.is_some(), &self.window_names(), self.active).into_iter().nth(index).and_then(|i| i.message);
+        let message = menu_items(menu, self.toggles(), &self.window_names(), self.active).into_iter().nth(index).and_then(|i| i.message);
         self.menu = None;
         match message {
             Some(message) => self.update(message),
@@ -1607,7 +1645,7 @@ impl Ide {
     }
 
     fn menu_key(&mut self, menu: Menu, key: NavKey) -> Task<Message> {
-        let items = menu_items(menu, self.vim.is_some(), &self.window_names(), self.active);
+        let items = menu_items(menu, self.toggles(), &self.window_names(), self.active);
         let enabled: Vec<usize> = (0..items.len()).filter(|&i| items[i].message.is_some()).collect();
         let step = |by: isize| {
             let at = MENUS.len() as isize + menu.index() as isize + by;
@@ -2026,26 +2064,42 @@ impl Ide {
         }
         self.building = true;
         self.diagnostics.clear();
-        self.status = format!("Compiling {} ...", path.display());
-        Task::perform(platform::blocking(move || runner::build(&path)), move |result| {
-            Message::BuildFinished(result, after)
+        let verb = if after == AfterSave::Check { "Checking" } else { "Compiling" };
+        self.status = format!("{verb} {} ...", path.display());
+        let check_first = self.check_before;
+        Task::perform(platform::blocking(move || run_build(&path, after, check_first)), move |(result, checked_only)| {
+            Message::BuildFinished(result, after, checked_only)
         })
     }
 
-    fn finish_build(&mut self, result: BuildResult, after: AfterSave) -> Task<Message> {
+    fn finish_build(&mut self, result: BuildResult, after: AfterSave, checked_only: bool) -> Task<Message> {
         self.diagnostics = result.diagnostics;
         self.message_index = None;
         let errors = self.diagnostics.iter().filter(|d| d.level == "error").count();
         let warnings = self.diagnostics.len() - errors;
 
         if !result.success {
-            self.status = format!("Compile failed: {errors} error(s), {warnings} warning(s)");
+            self.status = if checked_only {
+                // The status bar clips long text, so the important part comes first.
+                let lead = if after == AfterSave::Check { "Syntax check failed" } else { "Not built: syntax errors" };
+                format!("{lead}: {errors} error(s), {warnings} warning(s)")
+            } else {
+                format!("Compile failed: {errors} error(s), {warnings} warning(s)")
+            };
             if let Some(first) = self.diagnostics.iter().find(|d| d.level == "error").cloned() {
                 self.jump_to(&first);
             }
             return Task::none();
         }
 
+        if after == AfterSave::Check {
+            self.status = if warnings == 0 {
+                "No syntax errors".into()
+            } else {
+                format!("No syntax errors, {warnings} warning(s)")
+            };
+            return Task::none();
+        }
         self.status = format!("Compile successful, {warnings} warning(s)");
         let Some(target) = result.target else { return Task::none() };
         match after {
@@ -2059,7 +2113,7 @@ impl Ide {
                 Task::none()
             }
             AfterSave::Debug(start) => self.start_debug(target, start),
-            AfterSave::Nothing | AfterSave::Compile => Task::none(),
+            AfterSave::Nothing | AfterSave::Check | AfterSave::Compile => Task::none(),
         }
     }
 
@@ -2388,7 +2442,7 @@ impl Ide {
                     mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
                         .on_press(Message::CloseMenu),
                 )
-                .push(dropdown(menu, self.vim.is_some(), self.menu_item, &self.window_names(), self.active));
+                .push(dropdown(menu, self.toggles(), self.menu_item, &self.window_names(), self.active));
         }
         layers.into()
     }
@@ -2689,7 +2743,7 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
         Key::Named(key::Named::F4) => Some(Message::GoToCursor),
         Key::Named(key::Named::F5) if modifiers.shift() => Some(Message::DebugRun),
         Key::Named(key::Named::F8) if modifiers.alt() => Some(Message::NextMessage),
-        Key::Named(key::Named::F9) if modifiers.alt() => Some(Message::Compile),
+        Key::Named(key::Named::F9) if modifiers.alt() => Some(Message::SyntaxCheck),
         Key::Named(key::Named::F2) if modifiers.control() => Some(Message::OutputStop),
         Key::Named(key::Named::F2) => Some(Message::Save),
         Key::Named(key::Named::F3) if modifiers.alt() => Some(Message::CloseWindow),
@@ -2765,6 +2819,22 @@ fn popup_frame(content: Element<'_, Message>) -> Element<'_, Message> {
         .into()
 }
 
+/// Runs what a command needs: only the syntax check (Alt+F9), or the build,
+/// preceded by the check when "Check before compile/run" is on. The bool says
+/// that only the check ran (asked for, or it found errors that stop the build).
+fn run_build(path: &Path, after: AfterSave, check_first: bool) -> (BuildResult, bool) {
+    if after == AfterSave::Check {
+        return (runner::check(path), true);
+    }
+    if check_first {
+        let checked = runner::check(path);
+        if !checked.success {
+            return (checked, true);
+        }
+    }
+    (runner::build(path), false)
+}
+
 fn save_as_dialog(after: AfterSave) -> Task<Message> {
     Task::perform(
         rfd::AsyncFileDialog::new()
@@ -2777,8 +2847,8 @@ fn save_as_dialog(after: AfterSave) -> Task<Message> {
     )
 }
 
-fn dropdown(menu: Menu, vim_on: bool, selected: usize, windows: &[String], active: usize) -> Element<'static, Message> {
-    let entries = menu_items(menu, vim_on, windows, active).into_iter().enumerate().map(|(index, item)| {
+fn dropdown(menu: Menu, toggles: Toggles, selected: usize, windows: &[String], active: usize) -> Element<'static, Message> {
+    let entries = menu_items(menu, toggles, windows, active).into_iter().enumerate().map(|(index, item)| {
         let enabled = item.message.is_some();
         let label: Element<'static, Message> = if enabled {
             hotkey_label(&item.label, item.hotkey)
@@ -3327,5 +3397,127 @@ mod window_tests {
         send(&mut ide, [Message::Opened(Some(paths[0].clone())), Message::Opened(Some(paths[1].clone()))]);
         send(&mut ide, [Message::OpenMenu(Menu::Window), Message::Nav(NavKey::Char('1'))]);
         assert_eq!(ide.active, 0, "digit hotkey picks a window from the list");
+    }
+}
+
+#[cfg(test)]
+mod syntax_check_tests {
+    use super::*;
+
+    fn rust_file(name: &str, text: &str) -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("check-ui-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn ide_with(path: &Path) -> Ide {
+        let mut ide = Ide::default();
+        ide.open_path(path);
+        ide
+    }
+
+    fn result(success: bool, diagnostics: Vec<Diagnostic>) -> BuildResult {
+        BuildResult { success, diagnostics, target: None }
+    }
+
+    fn diagnostic(file: &Path, level: &str, line: usize) -> Diagnostic {
+        Diagnostic {
+            file: Some(file.to_path_buf()),
+            line,
+            column: 5,
+            level: level.into(),
+            message: "message".into(),
+        }
+    }
+
+    #[test]
+    fn keys_alt_f9_checks_f9_compiles_ctrl_f9_runs() {
+        let physical = key::Physical::Unidentified(key::NativeCode::Unidentified);
+        let f9 = Key::Named(key::Named::F9);
+        assert!(matches!(shortcut(&f9, physical, Modifiers::ALT), Some(Message::SyntaxCheck)));
+        assert!(matches!(shortcut(&f9, physical, Modifiers::empty()), Some(Message::Compile)));
+        assert!(matches!(shortcut(&f9, physical, Modifiers::CTRL), Some(Message::Run)));
+    }
+
+    #[test]
+    fn compile_menu_has_syntax_check_with_its_key() {
+        let items = menu_items(Menu::Compile, Toggles::default(), &[], 0);
+        let check = items.iter().find(|i| i.label == "Syntax check").expect("menu item");
+        assert_eq!((check.hotkey, check.keys), ('s', "Alt+F9"));
+        assert!(matches!(check.message, Some(Message::SyntaxCheck)));
+        assert!(SHORTCUTS.iter().any(|(_, keys, _)| *keys == "Alt+F9"));
+        assert!(!SHORTCUTS.iter().any(|(_, keys, _)| keys.contains("F9 / Alt+F9")), "old help line is gone");
+    }
+
+    #[test]
+    fn running_the_command_starts_a_check_not_a_build() {
+        let path = rust_file("start.rs", "fn main() {}\n");
+        let mut ide = ide_with(&path);
+        let _ = ide.update(Message::SyntaxCheck);
+        assert!(ide.building);
+        assert!(ide.status.starts_with("Checking"), "{}", ide.status);
+
+        let mut ide = ide_with(&path);
+        let _ = ide.update(Message::Compile);
+        assert!(ide.status.starts_with("Compiling"), "{}", ide.status);
+    }
+
+    #[test]
+    fn check_results_set_the_status_and_jump_to_errors() {
+        let path = rust_file("results.rs", "fn main() {\n    let x: i32 = \"no\";\n}\n");
+        let mut ide = ide_with(&path);
+
+        let _ = ide.finish_build(result(true, Vec::new()), AfterSave::Check, true);
+        assert_eq!(ide.status, "No syntax errors");
+
+        let _ = ide.finish_build(result(true, vec![diagnostic(&path, "warning", 1)]), AfterSave::Check, true);
+        assert_eq!(ide.status, "No syntax errors, 1 warning(s)");
+        assert_eq!(ide.panel_items().len(), 1, "warnings are listed in the Messages panel");
+
+        let _ = ide.finish_build(result(false, vec![diagnostic(&path, "error", 2)]), AfterSave::Check, true);
+        assert_eq!(ide.status, "Syntax check failed: 1 error(s), 0 warning(s)");
+        assert_eq!(ide.content.cursor().position.line, 1, "jumps to the first error");
+    }
+
+    #[test]
+    fn a_failed_check_before_compile_says_nothing_was_built() {
+        let path = rust_file("before.rs", "fn main() {\n    let x: i32 = \"no\";\n}\n");
+        let mut ide = ide_with(&path);
+        let _ = ide.finish_build(result(false, vec![diagnostic(&path, "error", 2)]), AfterSave::Run, true);
+        assert_eq!(ide.status, "Not built: syntax errors: 1 error(s), 0 warning(s)");
+        assert!(ide.output.screen.is_empty(), "nothing ran");
+    }
+
+    #[test]
+    fn check_before_stops_broken_code_and_lets_good_code_build() {
+        let bad = rust_file("gate_bad.rs", "fn main() {\n    let x: i32 = \"no\";\n}\n");
+        let (result, checked_only) = run_build(&bad, AfterSave::Run, true);
+        assert!(!result.success && checked_only, "the check stops the build");
+        assert!(result.target.is_none());
+
+        let good = rust_file("gate_good.rs", "fn main() { println!(\"ok\"); }\n");
+        let (result, checked_only) = run_build(&good, AfterSave::Run, true);
+        assert!(result.success && !checked_only, "good code goes on to the build");
+        assert!(result.target.is_some());
+
+        let (result, checked_only) = run_build(&good, AfterSave::Check, false);
+        assert!(result.success && checked_only);
+        assert!(result.target.is_none(), "Alt+F9 never gives something to run");
+
+        // With the setting off, a build runs by itself and reports its own errors.
+        let (result, checked_only) = run_build(&bad, AfterSave::Compile, false);
+        assert!(!result.success && !checked_only);
+    }
+
+    #[test]
+    fn options_menu_shows_the_setting() {
+        let on = Toggles { vim: false, check_before: true };
+        let items = menu_items(Menu::Options, on, &[], 0);
+        let item = items.iter().find(|i| i.label.starts_with("Check before run")).expect("menu item");
+        assert!(item.label.ends_with("[x]") && item.hotkey == 'c');
+        let items = menu_items(Menu::Options, Toggles::default(), &[], 0);
+        assert!(items.iter().any(|i| i.label.starts_with("Check before run") && i.label.ends_with("[ ]")));
     }
 }

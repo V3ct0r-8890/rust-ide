@@ -33,7 +33,8 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | F10 / Alt+letter | Open a menu (Alt+F File, Alt+E Edit, Alt+S Search, Alt+R Run, Alt+C Compile, Alt+O Options, Alt+H Help); arrows and Enter, or the red letter, choose an item |
 | F2 / Ctrl+S | Save (asks for a name the first time) |
 | F3 / Ctrl+O | Open (each file in its own window) |
-| F9 | Compile / syntax-check, list errors, jump to the first one |
+| F9 | Compile, list errors, jump to the first one |
+| Alt+F9 | Syntax check: find errors quickly without building or running (Rust: `cargo check` / `rustc` metadata, Python: syntax parse) |
 | F5 / Ctrl+F9 | Save, compile and run in the Output window (GUI programs open their own window) |
 | Alt+F5 | Show / hide the Output window (Turbo Pascal's "User screen"); Esc also hides it |
 | Ctrl+F2 | Program reset: stop the running program |
@@ -58,7 +59,8 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 The Output window shows the program's output and has an input line for programs that read
 from the keyboard. *Run > Run in external terminal* opens a separate terminal instead.
 
-Click a line in the Messages panel to jump to that error. While you type, the language server's
+Click a line in the Messages panel to jump to that error. **Options > Check before run** (window version) makes
+F9 and F5 run the syntax check first and stop on errors, so a build or run never starts with broken code. While you type, the language server's
 errors are shown live: red/magenta text in the editor, the "Messages (live)" panel, and the status bar. `rust-ide a.rs b.py` opens files at startup, each in its own window.
 
 ## Terminal version
@@ -107,11 +109,11 @@ To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging
 
 ## Status
 
-Done: terminal version `rust-ide-tui`, several open files (tabs, F6, Window menu), debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
+Done: syntax check (Alt+F9), terminal version `rust-ide-tui`, several open files (tabs, F6, Window menu), debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
 and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
 Windows and Linux packages.
 
-Next, easiest first: syntax check key (Alt+F9), window style (legacy / horizontal / vertical tabs),
+Next, easiest first: window style (legacy / horizontal / vertical tabs),
 font size, more Vim commands, new-project templates (Simple / Low / Medium / Complex for Rust and
 Python), the rest of the terminal version, C# support.
 

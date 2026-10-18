@@ -61,6 +61,7 @@ pub enum Action {
     Run,
     UserScreen,
     Compile,
+    SyntaxCheck,
     NextMessage,
     PrevMessage,
     NextWindow,
@@ -87,6 +88,8 @@ pub enum Effect {
     None,
     /// Build (and run afterwards when `run` is true); the status says "Compiling...".
     Build { path: PathBuf, run: bool },
+    /// Look for errors only: no program is built or run.
+    Check { path: PathBuf },
     /// Run a built program in the terminal (Turbo Pascal's user screen).
     Run(RunTarget),
     /// Show the terminal's normal screen until a key is pressed.
@@ -215,6 +218,7 @@ impl App {
             Menu::Run => vec![item("Run", 'r', "F5", Action::Run), item("User screen", 'u', "Alt+F5", Action::UserScreen)],
             Menu::Compile => vec![
                 item("Compile", 'c', "F9", Action::Compile),
+                item("Syntax check", 's', "Alt+F9", Action::SyntaxCheck),
                 item("Next message", 'n', "Alt+F8", Action::NextMessage),
                 item("Previous message", 'p', "Alt+F7", Action::PrevMessage),
             ],
@@ -440,6 +444,18 @@ impl App {
                 self.status = "Compiling...".into();
                 return Effect::Build { path: self.buffer().path.clone().unwrap_or_default(), run };
             }
+            Action::SyntaxCheck => {
+                if self.buffer().path.is_none() {
+                    self.status = "Save the file first (F2)".into();
+                    return Effect::None;
+                }
+                self.save();
+                if self.buffer().modified {
+                    return Effect::None; // saving failed
+                }
+                self.status = "Checking...".into();
+                return Effect::Check { path: self.buffer().path.clone().unwrap_or_default() };
+            }
             Action::UserScreen => return Effect::UserScreen,
             Action::NextMessage => self.step_message(true),
             Action::PrevMessage => self.step_message(false),
@@ -574,6 +590,22 @@ impl App {
         }
     }
 
+    /// Called by the main loop when a syntax check finishes.
+    pub fn check_finished(&mut self, result: BuildResult) {
+        self.messages = result.diagnostics;
+        self.message_index = None;
+        let errors = self.messages.iter().filter(|d| d.level == "error").count();
+        let warnings = self.messages.len() - errors;
+        if !result.success {
+            self.status = format!("Syntax check failed: {errors} error(s), {warnings} warning(s)");
+            self.step_message(true);
+        } else if warnings == 0 {
+            self.status = "No syntax errors".into();
+        } else {
+            self.status = format!("No syntax errors, {warnings} warning(s)");
+        }
+    }
+
     fn step_message(&mut self, forward: bool) {
         if self.messages.is_empty() {
             self.status = "No messages".into();
@@ -615,6 +647,7 @@ fn global_key(key: &KeyEvent) -> Option<Action> {
         KeyCode::F(7) if alt => Action::PrevMessage,
         KeyCode::F(8) if alt => Action::NextMessage,
         KeyCode::F(9) if ctrl => Action::Run,
+        KeyCode::F(9) if alt => Action::SyntaxCheck,
         KeyCode::F(9) => Action::Compile,
         KeyCode::Char(c) if ctrl && !alt => match c.to_ascii_lowercase() {
             's' => Action::Save,
@@ -770,6 +803,57 @@ mod tests {
         assert_eq!(app.build_finished(result, false), Effect::None);
         assert_eq!((app.buffer().row, app.buffer().char_col()), (1, 3), "jumps to the first error");
         assert!(app.status.starts_with("ERROR 1/1"));
+    }
+
+    #[test]
+    fn alt_f9_is_the_syntax_check_and_f9_still_compiles() {
+        let files = temp_files(&["check_me.rs"]);
+        let mut app = App::new(&files);
+        assert_eq!(app.handle(with(KeyCode::F(9), KeyModifiers::ALT)), Effect::Check { path: files[0].clone() });
+        assert_eq!(app.handle(key(KeyCode::F(9))), Effect::Build { path: files[0].clone(), run: false });
+        assert_eq!(
+            app.handle(with(KeyCode::F(9), KeyModifiers::CONTROL)),
+            Effect::Build { path: files[0].clone(), run: true }
+        );
+
+        // From the Compile menu: the item has the 's' hotkey.
+        app.handle(with(KeyCode::Char('c'), KeyModifiers::ALT));
+        assert!(matches!(app.mode, Mode::Menu { menu: Menu::Compile, .. }));
+        assert_eq!(app.handle(key(KeyCode::Char('s'))), Effect::Check { path: files[0].clone() });
+
+        let mut unsaved = App::new(&[]);
+        assert_eq!(unsaved.handle(with(KeyCode::F(9), KeyModifiers::ALT)), Effect::None);
+    }
+
+    #[test]
+    fn syntax_check_results() {
+        let files = temp_files(&["check_result.rs"]);
+        let mut app = App::new(&files);
+        let ok = BuildResult { success: true, diagnostics: Vec::new(), target: None };
+        app.check_finished(ok);
+        assert_eq!(app.status, "No syntax errors");
+        assert!(app.messages.is_empty());
+
+        let warning = Diagnostic {
+            file: Some(files[0].clone()),
+            line: 1,
+            column: 1,
+            level: "warning".into(),
+            message: "unused".into(),
+        };
+        app.check_finished(BuildResult { success: true, diagnostics: vec![warning], target: None });
+        assert_eq!(app.status, "No syntax errors, 1 warning(s)");
+
+        let error = Diagnostic {
+            file: Some(files[0].clone()),
+            line: 2,
+            column: 5,
+            level: "error".into(),
+            message: "bad".into(),
+        };
+        app.check_finished(BuildResult { success: false, diagnostics: vec![error], target: None });
+        assert!(app.status.starts_with("ERROR 1/1: bad"), "{}", app.status);
+        assert_eq!((app.buffer().row, app.buffer().char_col()), (1, 4), "jumps to the error");
     }
 
     #[test]

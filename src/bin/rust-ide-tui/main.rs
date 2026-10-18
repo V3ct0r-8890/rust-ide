@@ -78,6 +78,12 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
                     let result = runner::build(&path);
                     app.build_finished(result, run)
                 }
+                Effect::Check { path } => {
+                    terminal.draw(|frame| ui::draw(frame, &app))?;
+                    let result = runner::check(&path);
+                    app.check_finished(result);
+                    Effect::None
+                }
                 Effect::Run(target) => {
                     let status = user_screen(terminal, Some(&target))?;
                     app.status = status;

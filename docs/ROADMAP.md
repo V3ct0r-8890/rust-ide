@@ -1,6 +1,6 @@
 # Status and roadmap
 
-Last updated: 2026-10-17. Latest release: [v0.2.0](https://github.com/V3ct0r-8890/rust-ide/releases/tag/v0.2.0).
+Last updated: 2026-10-18. Latest release: [v0.2.0](https://github.com/V3ct0r-8890/rust-ide/releases/tag/v0.2.0).
 
 ## Done
 
@@ -12,6 +12,7 @@ Last updated: 2026-10-17. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 | Highlighting | Rust and Python, multi-line comments and strings |
 | Language servers | rust-analyzer and basedpyright/pyright: live errors in the editor and a live Messages panel, completion popup (Ctrl+Space, auto after `.` and `::`) |
 | Editing | Undo/redo (Ctrl+Z, Ctrl+Y); basic Vim mode (Options > Vim mode) |
+| Syntax check | Compile > Syntax check, **Alt+F9** (GUI and terminal version): finds errors without building or running - `cargo check` for projects, `rustc --emit=metadata` for single Rust files, the syntax parse for Python; errors go to the Messages panel and the cursor jumps to the first. Options > Check before run (GUI) makes F9 / F5 run it first and stop on errors |
 | Debugger | Debug menu with Turbo Pascal keys: Ctrl+F8 breakpoint, F7 trace into, F8 step over, Shift+F8 step out, F4 go to cursor, Shift+F5 debug run, Ctrl+F7 watch, Ctrl+F2 reset. Rust through `gdb -i dap` (gdb 14+), Python through debugpy. Breakpoints and the execution line are colored in the editor; the debug panel shows watches, arguments and locals, and the call stack |
 | Terminal version | `rust-ide-tui` (ratatui + crossterm): Turbo colors, block cursor, menus with hotkeys, F1 help, windows, find / search again / go to line, F9 compile with messages, F5 runs the program in the terminal (user screen, Alt+F5), open-file dialog. Shares the build runner, search and lexers with the GUI through the library crate |
 | Windows | Several open files: tabs under the menu bar, F6 / Shift+F6, Alt+1-9, Window menu (Alt+0) with the window list, Alt+F3 close; each window has its own text, undo and diagnostics; F3, error jumps and the debugger open files in windows; `rust-ide a.rs b.py` opens several files |
@@ -27,30 +28,14 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 
 | # | Item | Effort |
 |---|---|---|
-| 1 | Syntax check key (Alt+F9) | S |
-| 2 | Window style: legacy / horizontal tabs / vertical tabs | S-M |
-| 3 | Font size setting | M |
-| 4 | Vim mode, more commands | M |
-| 5 | New project from templates | M |
-| 6 | Terminal version: the rest | L |
-| 7 | C# support | L |
+| 1 | Window style: legacy / horizontal tabs / vertical tabs | S-M |
+| 2 | Font size setting | M |
+| 3 | Vim mode, more commands | M |
+| 4 | New project from templates | M |
+| 5 | Terminal version: the rest | L |
+| 6 | C# support | L |
 
-### 1. Syntax check key (Alt+F9) - S
-- **Compile > Syntax check**, key **Alt+F9**, in the GUI and the terminal version: checks the
-  current file for errors quickly, without building or running.
-  - Rust: `cargo check` (projects) or `rustc --emit=metadata` (single files): no machine code,
-    so much faster than a build.
-  - Python: the same syntax parse used before running today.
-  - C# (once item 7 exists): a build with no output, or the language server's errors.
-- Errors go to the Messages panel and the cursor jumps to the first one, like F9; on success
-  the status bar says "No syntax errors".
-- **Key change:** Alt+F9 is currently a second key for Compile. F9 stays Compile and Ctrl+F9
-  stays Run; Alt+F9 becomes Syntax check (the F1 help lists in `src/main.rs` and
-  `src/bin/rust-ide-tui/ui.rs` and the Compile menu change with it).
-- Optional setting **Check before compile/run** (Options menu): F9 and F5 run the syntax check
-  first and stop on errors, so a slow build or a run never starts with broken code.
-
-### 2. Window style setting (GUI) - S-M
+### 1. Window style setting (GUI) - S-M
 - **Options > Window style** chooses how open files (buffer windows) are shown and selected:
   - **Legacy (Turbo Pascal):** no tab strip. Windows are picked from the Window menu list
     (Alt+0), with F6 / Shift+F6 and Alt+1-9, and the active window's number and name are shown
@@ -62,7 +47,7 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
   (`window_style=legacy|horizontal|vertical`).
 - Later: a matching choice in the terminal version (legacy or horizontal tabs).
 
-### 3. Font size setting - M
+### 2. Font size setting - M
 - **Options > Font size...** in the GUI, plus keys: Ctrl+= larger, Ctrl+- smaller, Ctrl+0 back
   to the default. Applies to the editor, menus, panels and dialogs together.
 - Remembered between sessions in the settings file (`font_size=16`), with a sensible range
@@ -72,12 +57,12 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 - The terminal version uses the terminal's own font; its Options menu can say so and point to
   the terminal's zoom (usually Ctrl+= / Ctrl+-).
 
-### 4. Vim mode, more commands - M
+### 3. Vim mode, more commands - M
 - Line-wise Visual mode (`V`), repeat (`.`), text objects (`ciw`, `di(`), `f`/`t` motions, marks,
   block cursor.
 - Pure logic in `src/vim.rs`, so it is tested with unit tests like the existing commands.
 
-### 5. New project from templates - M
+### 4. New project from templates - M
 - **File > New project...** dialog: choose the language (Rust or Python), a size
   (Simple, Low, Medium or Complex), a project name and a folder. The IDE generates a general
   starting template and opens its main file.
@@ -94,15 +79,15 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 - Templates should build and run with F5 straight away, and pass their own tests; all eight
   (4 sizes x 2 languages) are checked by automated tests and in CI.
 
-### 6. Terminal version: the rest - L
+### 5. Terminal version: the rest - L
 Suggested sub-steps, easiest first:
-1. Replace, and mouse support (click to place the cursor, menus).
+1. Replace, mouse support (click to place the cursor, menus) and an Options menu (Check before run, ...).
 2. Vim mode (reuse `src/vim.rs`).
 3. Live errors and completion (language servers). Needs the terminal loop to wait for events
    from the servers as well as keys, which is the main rework.
 4. The debugger (breakpoints, F7/F8, watches panel).
 
-### 7. C# support (open-source tools only) - L
+### 6. C# support (open-source tools only) - L
 - **Compiler:** the open-source .NET SDK command line (MIT licensed, Roslyn compiler), current
   LTS release. F9 runs `dotnet build`, F5 runs `dotnet run`; errors come from the build output
   (`file(line,col): error CS0103: ...`) into the Messages panel. A single `.cs` file without a
@@ -118,7 +103,7 @@ Suggested sub-steps, easiest first:
   `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed), Fedora/RHEL
   `sudo dnf install dotnet-sdk-10.0`; netcoredbg from its GitHub releases.
 - **Templates:** add C# to File > New project (`dotnet new console`, class library + tests,
-  solution with several projects), once item 5 exists.
+  solution with several projects), once item 4 exists.
 - Why last: it adds a whole new toolchain on three systems, and netcoredbg is unproven here.
   Check before starting: the exact SDK and package names for each system, and whether
   netcoredbg covers the needed features (breakpoints, stepping, locals) on Windows and Linux.

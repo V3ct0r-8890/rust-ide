@@ -72,12 +72,29 @@ impl BuildResult {
 pub fn build(file: &Path) -> BuildResult {
     match file.extension().and_then(|e| e.to_str()) {
         Some("rs") => match find_cargo_manifest(file) {
-            Some(manifest) => build_cargo(&manifest),
-            None => build_rustc(file),
+            Some(manifest) => build_cargo(&manifest, false),
+            None => build_rustc(file, false),
         },
         Some("py" | "pyw") => check_python(file),
         _ => BuildResult::failed("Only .rs and .py files can be compiled"),
     }
+}
+
+/// Looks for errors without producing a program: `cargo check` for Rust
+/// projects, `rustc --emit=metadata` for single Rust files (both skip code
+/// generation, so they are much faster than a build), and the syntax parse
+/// for Python. The result never has a run target.
+pub fn check(file: &Path) -> BuildResult {
+    let mut result = match file.extension().and_then(|e| e.to_str()) {
+        Some("rs") => match find_cargo_manifest(file) {
+            Some(manifest) => build_cargo(&manifest, true),
+            None => build_rustc(file, true),
+        },
+        Some("py" | "pyw") => check_python(file),
+        _ => BuildResult::failed("Only .rs and .py files can be checked"),
+    };
+    result.target = None;
+    result
 }
 
 /// Launches a built program outside the IDE: console programs get their own
@@ -139,10 +156,11 @@ pub fn find_cargo_manifest(file: &Path) -> Option<PathBuf> {
     })
 }
 
-fn build_cargo(manifest: &Path) -> BuildResult {
+fn build_cargo(manifest: &Path, check_only: bool) -> BuildResult {
     let dir = manifest.parent().unwrap_or(Path::new("."));
+    let verb = if check_only { "check" } else { "build" };
     let output = match tool("cargo")
-        .args(["build", "--message-format=json"])
+        .args([verb, "--message-format=json"])
         .current_dir(dir)
         .output()
     {
@@ -178,7 +196,7 @@ fn build_cargo(manifest: &Path) -> BuildResult {
         let reason = stderr
             .lines()
             .find(|l| l.trim_start().starts_with("error"))
-            .unwrap_or("cargo build failed");
+            .map_or_else(|| format!("cargo {verb} failed"), str::to_string);
         diagnostics.push(BuildResult::failed(reason.trim()).diagnostics.remove(0));
     }
 
@@ -200,18 +218,24 @@ fn build_cargo(manifest: &Path) -> BuildResult {
     }
 }
 
-fn build_rustc(file: &Path) -> BuildResult {
+fn build_rustc(file: &Path, check_only: bool) -> BuildResult {
     let dir = file.parent().unwrap_or(Path::new(".")).to_path_buf();
     let out_dir = std::env::temp_dir().join("rust-ide");
     let _ = std::fs::create_dir_all(&out_dir);
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("main");
     let exe = out_dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
+    let metadata = out_dir.join(format!("{stem}.rmeta"));
 
-    let output = match tool("rustc")
-        .args(["--edition", "2024", "--error-format=json", "-g"]) // -g: debug info for the debugger
+    let mut rustc = tool("rustc");
+    rustc.args(["--edition", "2024", "--error-format=json"]);
+    if check_only {
+        // Type-check only: no machine code is generated.
+        rustc.arg("--emit=metadata").arg("-o").arg(&metadata);
+    } else {
+        rustc.arg("-g").arg("-o").arg(&exe); // -g: debug info for the debugger
+    }
+    let output = match rustc
         .arg(file)
-        .arg("-o")
-        .arg(&exe)
         .current_dir(&dir)
         .output()
     {
@@ -332,6 +356,69 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, source).unwrap();
         path
+    }
+
+    fn temp_exe(stem: &str) -> PathBuf {
+        std::env::temp_dir().join("rust-ide").join(format!("{stem}{}", std::env::consts::EXE_SUFFIX))
+    }
+
+    #[test]
+    fn check_rust_file_finds_errors_without_building() {
+        let _ = std::fs::remove_file(temp_exe("chk_bad"));
+        let file = sample("chk_bad.rs", "fn main() {\n    let x: i32 = \"no\";\n}\n");
+        let result = check(&file);
+        assert!(!result.success);
+        let error = result.diagnostics.iter().find(|d| d.level == "error").unwrap();
+        assert_eq!(error.line, 2);
+        assert!(result.target.is_none());
+        assert!(!temp_exe("chk_bad").exists(), "a check must not produce a program");
+    }
+
+    #[test]
+    fn check_rust_file_succeeds_without_a_run_target() {
+        let _ = std::fs::remove_file(temp_exe("chk_good"));
+        let file = sample("chk_good.rs", "fn main() { println!(\"hi\"); }\n");
+        let result = check(&file);
+        assert!(result.success, "{:?}", result.diagnostics);
+        assert!(result.target.is_none());
+        assert!(!temp_exe("chk_good").exists());
+        assert!(build(&file).target.is_some(), "a build still gives a run target");
+    }
+
+    #[test]
+    fn check_cargo_project_reports_errors_and_builds_nothing() {
+        let root = std::env::temp_dir().join("rust-ide-tests").join("check-project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"chk\"\nversion = \"0.1.0\"\nedition = \"2024\"\n").unwrap();
+        let main = root.join("src").join("main.rs");
+
+        std::fs::write(&main, "fn main() {\n    let n: u8 = \"x\";\n}\n").unwrap();
+        let result = check(&main);
+        assert!(!result.success);
+        let error = result.diagnostics.iter().find(|d| d.level == "error").unwrap();
+        assert_eq!(error.line, 2);
+        assert!(error.file.as_deref().is_some_and(|f| f.ends_with("main.rs")));
+
+        std::fs::write(&main, "fn main() { println!(\"ok\"); }\n").unwrap();
+        let result = check(&main);
+        assert!(result.success, "{:?}", result.diagnostics);
+        assert!(result.target.is_none());
+        let exe = root.join("target").join("debug").join(format!("chk{}", std::env::consts::EXE_SUFFIX));
+        assert!(!exe.exists(), "cargo check must not link a program");
+    }
+
+    #[test]
+    fn check_python_uses_the_syntax_parse() {
+        let bad = sample("chk_bad.py", "print('ok')\nif True\n    pass\n");
+        let result = check(&bad);
+        assert!(!result.success);
+        assert_eq!(result.diagnostics[0].line, 2);
+        let good = sample("chk_good.py", "print('ok')\n");
+        let result = check(&good);
+        assert!(result.success);
+        assert!(result.target.is_none());
+        assert!(!check(Path::new("notes.txt")).success, "other file types are refused");
     }
 
     #[test]
