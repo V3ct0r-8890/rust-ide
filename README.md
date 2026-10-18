@@ -111,7 +111,7 @@ Done: terminal version `rust-ide-tui`, several open files (tabs, F6, Window menu
 and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
 Windows and Linux packages.
 
-Next: language servers and debugger in the terminal version, C# support,
+Next: language servers and debugger in the terminal version, C# support, font size, syntax check key,
 new-project templates (Simple / Low / Medium / Complex for Rust and Python).
 
 See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limitations.

@@ -67,6 +67,26 @@ In suggested order.
 - Check before starting: the exact SDK and package names for each system, and whether
   netcoredbg covers the needed features (breakpoints, stepping, locals) on Windows and Linux.
 
+### 5. Font size setting
+- **Options > Font size...** in the GUI, plus keys: Ctrl+= larger, Ctrl+- smaller, Ctrl+0 back
+  to the default. Applies to the editor, menus, panels and dialogs together.
+- Remembered between sessions in the settings file (`font_size=16`), with a sensible range
+  (for example 10 to 32).
+- The terminal version uses the terminal's own font; its Options menu can say so and point to
+  the terminal's zoom (usually Ctrl+= / Ctrl+-).
+
+### 6. Syntax check key (before compile and run)
+- A new **Compile > Syntax check** with its own key (proposed **Shift+F9**), in the GUI and the
+  terminal version: checks the current file for errors quickly, without building or running.
+  - Rust: `cargo check` (projects) or `rustc --emit=metadata` (single files): no machine code,
+    so much faster than a build.
+  - Python: the same syntax parse used before running today.
+  - C# (once item 4 exists): a build with no output, or the language server's errors.
+- Errors go to the Messages panel and the cursor jumps to the first one, like F9; on success
+  the status bar says "No syntax errors".
+- Optional setting **Check before compile/run** (Options menu): F9 and F5 run the syntax check
+  first and stop on errors, so a slow build or a run never starts with broken code.
+
 ## Known limitations
 
 - **Completion popup** sits in the bottom-right corner of the editor, not next to the cursor: the editor widget does not report the cursor's screen position.
