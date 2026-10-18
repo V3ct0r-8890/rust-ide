@@ -90,6 +90,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Options", "Alt+O G", "General environment: proxy, PATH ... for everything the IDE starts (NAME=value file)"),
     ("Options", "Alt+O O", "Project environment: variables for this project (.rust-ide/env, overrides the general ones)"),
     ("Options", "Alt+O X", "Show environment: the general and project variables that apply now"),
+    ("Options", "Alt+O Y", "Python .venv setup: create .venv in the project and install requirements.txt (or the project)"),
     ("Options", "Alt+O V", "Vim mode on / off"),
     ("Options", "Alt+O C", "Check the syntax before compile / run on / off"),
     ("Options", "Ctrl+= / Ctrl+- / Ctrl+0", "Editor font larger / smaller / default size (also Alt+O B / S / R)"),
@@ -409,6 +410,7 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
                 item("General environment...", 'g', "", Message::EditEnv(true)),
                 item("Project environment...", 'o', "", Message::EditEnv(false)),
                 item("Show environment", 'x', "", Message::ShowEnv),
+                item("Python .venv setup", 'y', "", Message::PythonSetup),
                 item(if toggles.vim { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
                 item(
                     if toggles.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
@@ -784,6 +786,8 @@ enum Message {
     SettingsAct(usize, i8),
     OpenProject,
     EditEnv(bool),
+    PythonSetup,
+    PythonSetupDone(Result<String, String>),
     ShowEnv,
     ProjectName(String),
     ProjectFolder(String),
@@ -1069,6 +1073,15 @@ impl Ide {
                     Err(e) => self.status = format!("Cannot create the environment file: {e}"),
                 }
                 iced::widget::operation::focus(EDITOR)
+            }
+            Message::PythonSetup => {
+                let dir = self.project_dir();
+                self.status = "Setting up the Python environment (.venv, requirements) ...".into();
+                Task::perform(platform::blocking(move || rust_ide::env::python_setup(&dir)), Message::PythonSetupDone)
+            }
+            Message::PythonSetupDone(result) => {
+                self.status = result.unwrap_or_else(|e| e);
+                Task::none()
             }
             Message::ShowEnv => {
                 let text = rust_ide::env::describe(Some(&self.project_dir()));

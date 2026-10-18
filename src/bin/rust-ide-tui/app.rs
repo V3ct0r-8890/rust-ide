@@ -71,6 +71,7 @@ pub enum Action {
     GeneralEnv,
     ProjectEnv,
     ShowEnv,
+    PythonSetup,
     Run,
     UserScreen,
     Compile,
@@ -107,6 +108,8 @@ pub enum Effect {
     Run(RunTarget),
     /// Show the terminal's normal screen until a key is pressed.
     UserScreen,
+    /// Create the project's .venv and install its requirements (slow).
+    PythonSetup(PathBuf),
     Quit,
 }
 
@@ -291,6 +294,7 @@ impl App {
                 item("General environment...", 'g', "", Action::GeneralEnv),
                 item("Project environment...", 'p', "", Action::ProjectEnv),
                 item("Show environment", 's', "", Action::ShowEnv),
+                item("Python .venv setup", 'y', "", Action::PythonSetup),
             ],
             Menu::Window => {
                 let mut items = vec![
@@ -507,6 +511,10 @@ impl App {
                 Ok(path) => self.open(&path),
                 Err(e) => self.status = format!("Cannot create the project environment file: {e}"),
             },
+            Action::PythonSetup => {
+                self.status = "Setting up the Python environment (.venv, requirements) ...".into();
+                return Effect::PythonSetup(self.project_dir());
+            }
             Action::ShowEnv => {
                 let text = rust_ide::env::describe(Some(&self.project_dir()));
                 self.new_window();

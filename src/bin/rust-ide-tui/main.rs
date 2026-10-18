@@ -94,6 +94,11 @@ fn run(terminal: &mut DefaultTerminal, mut app: App, mouse: bool) -> io::Result<
                     let result = runner::check(&path);
                     app.check_finished(result)
                 }
+                Effect::PythonSetup(dir) => {
+                    terminal.draw(|frame| ui::draw(frame, &app))?;
+                    app.status = rust_ide::env::python_setup(&dir).unwrap_or_else(|e| e);
+                    Effect::None
+                }
                 Effect::Run(target) => {
                     let status = user_screen(terminal, Some(&target), mouse)?;
                     app.status = status;

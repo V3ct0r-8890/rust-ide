@@ -300,7 +300,11 @@ fn parse_rustc_diagnostic(message: &Value, base: &Path) -> Option<Diagnostic> {
 
 fn check_python(file: &Path) -> BuildResult {
     let dir = file.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let mut python = tool(platform::python());
+    let venv = crate::lsp::venv_python(&dir);
+    let mut python = match &venv {
+        Some(path) => platform::hidden_command(path),
+        None => tool(platform::python()),
+    };
     crate::env::apply(&mut python, &dir);
     let output = match python
         .args(["-c", PYTHON_CHECK])
@@ -323,11 +327,17 @@ fn check_python(file: &Path) -> BuildResult {
 
     if output.status.success() {
         let program = if gui && cfg!(windows) { "pythonw" } else { platform::python() };
+        // The project's .venv interpreter wins over the system one.
+        let program = match venv {
+            Some(path) if gui && cfg!(windows) => path.with_file_name("pythonw.exe"),
+            Some(path) => path,
+            None => platform::find_program(program).unwrap_or_else(|| PathBuf::from(program)),
+        };
         return BuildResult {
             success: true,
             diagnostics: Vec::new(),
             target: Some(RunTarget {
-                program: platform::find_program(program).unwrap_or_else(|| PathBuf::from(program)),
+                program,
                 args: vec![file.to_string_lossy().into_owned()],
                 cwd: dir,
                 gui,

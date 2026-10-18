@@ -138,6 +138,10 @@ variables, in two groups kept apart. Both are plain text files with one `NAME=va
   general one with the same name. If the project has a `.gitignore`, `.rust-ide/` is added to it so
   secrets are not committed.
 - **Options > Show environment** (Alt+O X) opens a window listing both groups and where each file is.
+- **Options > Python .venv setup** (Alt+O Y): creates `.venv` in the project folder if there is none, then
+  installs `requirements.txt` (or the project itself with `pip install -e .` when it has a
+  `pyproject.toml` / `setup.py`). F5 and the syntax check then use the `.venv` interpreter (the
+  debugger and language server already did). The environment variables above apply to pip too.
 
 ## Vim mode
 

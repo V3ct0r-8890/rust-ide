@@ -163,6 +163,64 @@ pub fn apply(command: &mut Command, dir: &Path) {
     command.envs(effective(Some(dir)));
 }
 
+/// Sets up the Python environment of the project `dir` belongs to: creates
+/// `.venv` in the project folder when there is none, then installs
+/// `requirements.txt` (or the project itself, when it has a `pyproject.toml`
+/// or `setup.py`). Slow: run it off the UI thread. Returns a one-line summary.
+pub fn python_setup(dir: &Path) -> Result<String, String> {
+    let root = project_root(dir);
+    let mut done = Vec::new();
+    let venv_python = match crate::lsp::venv_python(&root) {
+        Some(python) => python,
+        None => {
+            let system = platform::find_program(platform::python())
+                .ok_or_else(|| "Python is not installed (see Options > Dependencies)".to_string())?;
+            let mut command = platform::hidden_command(system);
+            apply(&mut command, &root);
+            let output = command
+                .args(["-m", "venv", ".venv"])
+                .current_dir(&root)
+                .output()
+                .map_err(|e| format!("Cannot start Python: {e}"))?;
+            if !output.status.success() {
+                return Err(last_line("Creating .venv failed", &output));
+            }
+            done.push("created .venv");
+            crate::lsp::venv_python(&root).ok_or_else(|| "The new .venv has no Python".to_string())?
+        }
+    };
+    let install: Option<Vec<&str>> = if root.join("requirements.txt").is_file() {
+        Some(vec!["-m", "pip", "install", "-r", "requirements.txt"])
+    } else if root.join("pyproject.toml").is_file() || root.join("setup.py").is_file() {
+        Some(vec!["-m", "pip", "install", "-e", "."])
+    } else {
+        None
+    };
+    if let Some(args) = install {
+        let mut command = platform::hidden_command(&venv_python);
+        apply(&mut command, &root);
+        let output = command
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .map_err(|e| format!("Cannot start pip: {e}"))?;
+        if !output.status.success() {
+            return Err(last_line("pip install failed", &output));
+        }
+        done.push("installed the requirements");
+    }
+    if done.is_empty() {
+        done.push("the .venv already exists and there is nothing to install");
+    }
+    Ok(format!("Python environment of {}: {}", root.display(), done.join(", ")))
+}
+
+fn last_line(what: &str, output: &std::process::Output) -> String {
+    let text = format!("{}{}", String::from_utf8_lossy(&output.stderr), String::from_utf8_lossy(&output.stdout));
+    let line = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    format!("{what}: {}", line.trim())
+}
+
 const GENERAL_TEMPLATE: &str = "\
 # General environment of Rust IDE: used for every project and every tool the IDE starts.
 # One NAME=value per line. $NAME, ${NAME} and %NAME% use existing values.
@@ -375,5 +433,23 @@ mod tests {
         std::fs::write(other.join("Cargo.toml"), "").unwrap();
         ensure_project_file(&other).unwrap();
         assert!(!other.join(".gitignore").exists());
+    }
+
+    #[test]
+    #[ignore = "needs Python with venv; run with --ignored"]
+    fn python_setup_creates_a_venv_and_installs_requirements() {
+        let root = scratch("venv");
+        std::fs::write(root.join("requirements.txt"), "# nothing to install
+").unwrap();
+        let message = python_setup(&root).unwrap();
+        assert!(message.contains("created .venv") && message.contains("installed"), "{message}");
+        assert!(crate::lsp::venv_python(&root).unwrap().is_file());
+        std::fs::write(root.join("hello.py"), "print('hi')
+").unwrap();
+        let built = crate::runner::build(&root.join("hello.py"));
+        let program = built.target.expect("a run target").program;
+        assert_eq!(program, crate::lsp::venv_python(&root).unwrap(), "runs with the project's interpreter");
+        let again = python_setup(&root).unwrap();
+        assert!(!again.contains("created"), "{again}");
     }
 }

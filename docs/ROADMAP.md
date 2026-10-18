@@ -36,17 +36,18 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 
 | # | Item | Effort |
 |---|---|---|
-| 1 | Development environments for project sessions: variables are done (0.2.14), the rest is **next** | L |
+| 1 | Development environments for project sessions: variables (0.2.14) and Python .venv (0.2.15) are done, the rest is **next** | L |
 | 2 | Line numbers in the window version | M |
 | 3 | Terminal version: the rest | L |
 | 4 | C# support | L |
 
-### 1. Development environments for project sessions - L (variables done, the rest is next)
+### 1. Development environments for project sessions - L (variables and Python .venv done, the rest is next)
 **Phase 1 is done in 0.2.14:** both groups of variables as plain `NAME=value` files
 (`environment.env` next to the settings file, and `.rust-ide/env` in the project; a project value
 wins; `$NAME` / `${NAME}` / `%NAME%` expand), applied to builds, runs, the debugger, language
 servers and tool checks, with Options > General environment / Project environment / Show
-environment in both front ends. Format decision taken: plain `NAME=value`, not TOML. Not done yet:
+environment in both front ends. Format decision taken: plain `NAME=value`, not TOML. **Phase 2 (0.2.15):** Options > Python .venv setup creates the project's `.venv`, installs its
+requirements, and F5 / syntax check use it. Not done yet:
 the combined dialog with "where each value comes from", and everything below.
 Set up and remember a custom environment per project, so a project always builds and runs with
 the tools and settings chosen for it, without touching the machine-wide setup. **The details

@@ -373,6 +373,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Options > General environment", "Edit proxy, PATH ... for everything the IDE starts (NAME=value file)"),
     ("Options > Project environment", "Edit the variables of this project (.rust-ide/env; they override the general ones)"),
     ("Options > Show environment", "List the variables that apply now"),
+    ("Options > Python .venv setup", "Create .venv in the project and install requirements.txt (or the project)"),
     ("Options > Check before run", "F9 / F5 look for errors first and stop if there are any (remembered)"),
     ("Mouse", "Click a menu, a menu item, a tab or a place in the text; the wheel moves the cursor (start with --no-mouse to select text with the mouse)"),
     ("Ctrl+G", "Go to line number"),
