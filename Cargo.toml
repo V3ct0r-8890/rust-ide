@@ -1,12 +1,12 @@
 ﻿[package]
 name = "rust-ide"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 description = "Turbo Pascal-style IDE for Rust and Python"
 repository = "https://github.com/V3ct0r-8890/rust-ide"
 
 [dependencies]
-iced = { version = "0.14.0", features = ["advanced"] }
+iced = { version = "0.14.0", features = ["advanced", "markdown"] }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 rfd = "0.17.2"
 serde_json = "1.0.154"

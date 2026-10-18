@@ -1,6 +1,6 @@
 # Status and roadmap
 
-Last updated: 2026-10-19. Latest release: [v0.2.0](https://github.com/V3ct0r-8890/rust-ide/releases/tag/v0.2.0).
+Last updated: 2026-10-20. Latest release: [v0.2.0](https://github.com/V3ct0r-8890/rust-ide/releases/tag/v0.2.0).
 
 ## Done
 
@@ -12,6 +12,7 @@ Last updated: 2026-10-19. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 | Highlighting | Rust and Python, multi-line comments and strings |
 | Language servers | rust-analyzer and basedpyright/pyright: live errors in the editor and a live Messages panel, completion popup (Ctrl+Space, auto after `.` and `::`) |
 | Editing | Undo/redo (Ctrl+Z, Ctrl+Y); basic Vim mode (Options > Vim mode) |
+| Markdown preview | Window version: **Alt+F6** / Alt+P / Window menu shows the rendered `.md` next to the editor (iced's Markdown widget: headings, emphasis, lists, quotes, tables, code blocks, links); follows typing and the cursor; links open in the browser or as files |
 | Window style | Options > Window style (window version): **Legacy windows** (Turbo Pascal frame line with the name and window number), **Horizontal tabs** (default) or **Vertical tabs** (list on the left); same keys in every style; the choice is remembered |
 | New files | Started without a file, the IDE (both versions) asks which language to use: Rust, Python, or Text / Markdown for anything else; File > New asks too. The last choice is remembered and preselected; the type sets highlighting, the `NONAME.xx` name and the Save As default; `.txt` and `.md` open as plain files |
 | Syntax check | Compile > Syntax check, **Alt+F9** (GUI and terminal version): finds errors without building or running - `cargo check` for projects, `rustc --emit=metadata` for single Rust files, the syntax parse for Python; errors go to the Messages panel and the cursor jumps to the first. Options > Check before run (GUI) makes F9 / F5 run it first and stop on errors |
@@ -30,28 +31,13 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 
 | # | Item | Effort |
 |---|---|---|
-| 1 | Markdown preview (window version first) | S-M |
-| 2 | Font size setting | M |
-| 3 | Vim mode, more commands | M |
-| 4 | New project from templates | M |
-| 5 | Terminal version: the rest | L |
-| 6 | C# support | L |
+| 1 | Font size setting | M |
+| 2 | Vim mode, more commands | M |
+| 3 | New project from templates | M |
+| 4 | Terminal version: the rest | L |
+| 5 | C# support | L |
 
-### 1. Markdown preview - S-M
-- Today `.md` files open as plain text: no highlighting and no preview. This adds a **preview**
-  that shows the rendered document next to the editor and follows what you type.
-- **Window version first:** iced has a Markdown widget (an optional feature of the library we
-  already use), so headings, bold / italic, lists, quotes, code blocks and links come ready-made;
-  clicking a link opens the browser. To check while building: tables and images.
-- Proposed: side by side (editor left, preview right), switched on and off with one key (Alt+F6
-  proposed, also in a menu) and scrolled with the keyboard. Whether it should also be a
-  full-window preview is decided when designing it.
-- Only offered for `.md` windows (and untitled ones of the Markdown type).
-- **Terminal version later:** a small renderer built on the `pulldown-cmark` parser (headings,
-  bold, lists, code blocks as styled text), part of "Terminal version: the rest".
-- Optional: light highlighting in the editor for Markdown source (headings, `**bold**`, code).
-
-### 2. Font size setting - M
+### 1. Font size setting - M
 - **Options > Font size...** in the GUI, plus keys: Ctrl+= larger, Ctrl+- smaller, Ctrl+0 back
   to the default. Applies to the editor, menus, panels and dialogs together.
 - Remembered between sessions in the settings file (`font_size=16`), with a sensible range
@@ -61,12 +47,12 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 - The terminal version uses the terminal's own font; its Options menu can say so and point to
   the terminal's zoom (usually Ctrl+= / Ctrl+-).
 
-### 3. Vim mode, more commands - M
+### 2. Vim mode, more commands - M
 - Line-wise Visual mode (`V`), repeat (`.`), text objects (`ciw`, `di(`), `f`/`t` motions, marks,
   block cursor.
 - Pure logic in `src/vim.rs`, so it is tested with unit tests like the existing commands.
 
-### 4. New project from templates - M
+### 3. New project from templates - M
 - **File > New project...** dialog: choose the language (Rust or Python), a size
   (Simple, Low, Medium or Complex), a project name and a folder. The IDE generates a general
   starting template and opens its main file.
@@ -83,15 +69,16 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 - Templates should build and run with F5 straight away, and pass their own tests; all eight
   (4 sizes x 2 languages) are checked by automated tests and in CI.
 
-### 5. Terminal version: the rest - L
+### 4. Terminal version: the rest - L
 Suggested sub-steps, easiest first:
 1. Replace, mouse support (click to place the cursor, menus) and an Options menu (Check before run, window style, ...).
 2. Vim mode (reuse `src/vim.rs`).
 3. Live errors and completion (language servers). Needs the terminal loop to wait for events
    from the servers as well as keys, which is the main rework.
 4. The debugger (breakpoints, F7/F8, watches panel).
+5. Markdown preview: a small renderer built on the `pulldown-cmark` parser (headings, bold, lists, code blocks as styled text).
 
-### 6. C# support (open-source tools only) - L
+### 5. C# support (open-source tools only) - L
 - **Compiler:** the open-source .NET SDK command line (MIT licensed, Roslyn compiler), current
   LTS release. F9 runs `dotnet build`, F5 runs `dotnet run`; errors come from the build output
   (`file(line,col): error CS0103: ...`) into the Messages panel. A single `.cs` file without a
@@ -107,13 +94,14 @@ Suggested sub-steps, easiest first:
   `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed), Fedora/RHEL
   `sudo dnf install dotnet-sdk-10.0`; netcoredbg from its GitHub releases.
 - **Templates:** add C# to File > New project (`dotnet new console`, class library + tests,
-  solution with several projects), once item 4 exists.
+  solution with several projects), once item 3 exists.
 - Why last: it adds a whole new toolchain on three systems, and netcoredbg is unproven here.
   Check before starting: the exact SDK and package names for each system, and whether
   netcoredbg covers the needed features (breakpoints, stepping, locals) on Windows and Linux.
 
 ## Known limitations
 
+- **Markdown preview** shows images only as their description, does not follow `#heading` links, and does not color code blocks.
 - **Completion popup** sits in the bottom-right corner of the editor, not next to the cursor: the editor widget does not report the cursor's screen position.
 - **Output window** is not a full terminal: programs see pipes, not a TTY, so colors and full-screen terminal programs do not work. ANSI codes are stripped.
 - **Block cursor** is drawn only while the IDE window has focus (it follows the editor's input-method caret).

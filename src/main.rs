@@ -15,7 +15,7 @@ use iced::futures::channel::mpsc;
 use iced::keyboard::{self, Key, Modifiers, key};
 use iced::widget::text_editor::{Action, Binding, Cursor, Edit, KeyPress, Position};
 use iced::widget::{
-    Space, button, checkbox, column, container, mouse_area, opaque, row, scrollable, stack, text,
+    Space, button, checkbox, column, container, markdown, mouse_area, opaque, row, scrollable, stack, text,
     text_editor, text_input,
 };
 use iced::{Background, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
@@ -45,6 +45,7 @@ const OUTPUT_INPUT: &str = "output-input";
 const SEARCH_INPUT: &str = "search-input";
 const EDITOR: &str = "editor";
 const HELP_SCROLL: &str = "help-scroll";
+const PREVIEW_SCROLL: &str = "preview-scroll";
 
 /// Every keyboard shortcut, shown by F1. Grouped as (group, keys, action).
 const SHORTCUTS: &[(&str, &str, &str)] = &[
@@ -63,6 +64,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Window", "Alt+1 ... Alt+9", "Go to window 1-9"),
     ("Window", "Alt+0", "Window list (Window menu)"),
     ("Window", "Alt+F3", "Close the window (press twice to discard changes)"),
+    ("Window", "Alt+F6 / Alt+P", "Markdown preview next to the editor, for .md files (links open on click)"),
     ("Edit", "Ctrl+Z / Ctrl+Y", "Undo / redo (Ctrl+Shift+Z also redoes)"),
     ("Edit", "Tab / Shift+Tab", "Indent / unindent"),
     ("Edit", "Ctrl+Space", "Code completion (also after . and ::)"),
@@ -267,6 +269,7 @@ struct Toggles {
     vim: bool,
     check_before: bool,
     window_style: WindowStyle,
+    preview: bool,
 }
 
 fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -> Vec<MenuItem> {
@@ -340,6 +343,12 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
                 item("Next", 'n', "F6", Message::NextWindow),
                 item("Previous", 'p', "Shift+F6", Message::PrevWindow),
                 item("Close", 'c', "Alt+F3", Message::CloseWindow),
+                item(
+                    if toggles.preview { "Markdown preview  [x]" } else { "Markdown preview  [ ]" },
+                    'm',
+                    "Alt+F6",
+                    Message::TogglePreview,
+                ),
             ];
             for (index, name) in windows.iter().enumerate() {
                 let mark = if index == active { ">" } else { " " };
@@ -494,6 +503,13 @@ struct Ide {
     untitled_ext: Option<&'static str>,
     language: Option<LanguageDialog>,
     window_style: WindowStyle,
+    /// Markdown preview next to the editor (shown for Markdown windows only).
+    preview: bool,
+    preview_content: markdown::Content,
+    /// The text `preview_content` was made from.
+    preview_source: String,
+    /// The cursor line the preview was last scrolled to.
+    preview_line: usize,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     /// True while consecutive typing is being collected into one undo step.
@@ -619,6 +635,8 @@ enum Message {
     SyntaxCheck,
     NewFileType(usize),
     WindowStyle(WindowStyle),
+    TogglePreview,
+    PreviewLink(String),
     OpenSearch(SearchMode),
     SearchQuery(String),
     SearchReplacement(String),
@@ -692,7 +710,12 @@ impl Ide {
     }
 
     fn toggles(&self) -> Toggles {
-        Toggles { vim: self.vim.is_some(), check_before: self.check_before, window_style: self.window_style }
+        Toggles {
+            vim: self.vim.is_some(),
+            check_before: self.check_before,
+            window_style: self.window_style,
+            preview: self.preview,
+        }
     }
 
     fn title(&self) -> String {
@@ -730,6 +753,11 @@ impl Ide {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.update_inner(message);
+        Task::batch([task, self.sync_preview()])
+    }
+
+    fn update_inner(&mut self, message: Message) -> Task<Message> {
         // A command closes an open menu; navigation and background events do not.
         let keeps_menu = matches!(
             message,
@@ -787,13 +815,28 @@ impl Ide {
             Message::CloseMenu => Task::none(),
             Message::New => self.ask_language(false),
             Message::NewFileType(index) => self.choose_language(index),
+            Message::TogglePreview => {
+                if !self.is_markdown() {
+                    self.status = "The preview is for Markdown (.md) files".into();
+                } else {
+                    self.preview = !self.preview;
+                    self.status = format!("Markdown preview {}", if self.preview { "on" } else { "off" });
+                }
+                // The layout changes, which makes the editor lose the keyboard focus.
+                iced::widget::operation::focus(EDITOR)
+            }
+            Message::PreviewLink(url) => {
+                self.open_link(&url);
+                Task::none()
+            }
             Message::WindowStyle(style) => {
                 self.window_style = style;
                 self.status = format!("Window style: {}", style.label().to_lowercase());
                 if let Err(e) = platform::write_setting("window_style", style.setting()) {
                     self.status = format!("Cannot save settings: {e}");
                 }
-                Task::none()
+                // The layout changes, which makes the editor lose the keyboard focus.
+                iced::widget::operation::focus(EDITOR)
             }
             Message::Open => {
                 Task::perform(
@@ -1705,6 +1748,78 @@ impl Ide {
             .width(Length::Fill)
             .padding([1, 4])
             .style(|_| container::Style::default().background(TURBO_GRAY))
+            .into()
+    }
+
+    // ----- Markdown preview -----
+
+    /// A Markdown file: by its name, or the chosen type of an untitled window.
+    fn is_markdown(&self) -> bool {
+        let ext = match &self.path {
+            Some(path) => path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase),
+            None => self.untitled_ext.map(str::to_string),
+        };
+        matches!(ext.as_deref(), Some("md" | "markdown"))
+    }
+
+    fn preview_visible(&self) -> bool {
+        self.preview && self.is_markdown()
+    }
+
+    /// Re-reads the text when it changed and scrolls the preview to where the
+    /// cursor is, so it follows what is being edited.
+    fn sync_preview(&mut self) -> Task<Message> {
+        use iced::widget::scrollable::RelativeOffset;
+        if !self.preview_visible() {
+            return Task::none();
+        }
+        let text = self.content.text();
+        if text != self.preview_source {
+            self.preview_content = markdown::Content::parse(&text);
+            self.preview_source = text;
+        }
+        let line = self.content.cursor().position.line;
+        if line == self.preview_line {
+            return Task::none();
+        }
+        self.preview_line = line;
+        let last = self.content.line_count().saturating_sub(1).max(1);
+        let y = (line as f32 / last as f32).clamp(0.0, 1.0);
+        iced::widget::operation::snap_to(PREVIEW_SCROLL, RelativeOffset { x: 0.0, y })
+    }
+
+    fn open_link(&mut self, url: &str) {
+        let dir = self.path.as_deref().and_then(Path::parent);
+        match classify_link(url, dir) {
+            LinkTarget::Web(url) => {
+                self.status = match platform::open_url(&url) {
+                    Ok(()) => format!("Opened in the browser: {url}"),
+                    Err(e) => format!("Cannot open the browser: {e}"),
+                };
+            }
+            LinkTarget::File(path) => {
+                self.open_path(&path);
+            }
+            LinkTarget::Heading => self.status = "Links to a heading are not followed yet".into(),
+            LinkTarget::Unknown => self.status = format!("Cannot open the link: {url}"),
+        }
+    }
+
+    /// The rendered Markdown, on a light page, in its own scrolling pane.
+    fn preview_pane(&self) -> Element<'_, Message> {
+        let mut style = markdown::Style::from(&Theme::Dark);
+        style.link_color = TURBO_BLUE;
+        let settings = markdown::Settings::with_text_size(16, style);
+        let page = markdown::view(self.preview_content.items(), settings).map(Message::PreviewLink);
+        container(scrollable(container(page).padding(12)).id(PREVIEW_SCROLL).width(Length::Fill).height(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(TURBO_GRAY)),
+                text_color: Some(Color::BLACK),
+                border: iced::Border::default().color(Color::BLACK).width(1),
+                ..container::Style::default()
+            })
             .into()
     }
 
@@ -2627,6 +2742,11 @@ impl Ide {
         if let Some(bar) = &self.search {
             layout = layout.push(self.search_bar(bar));
         }
+        let editor: Element<'_, Message> = if self.preview_visible() {
+            row![editor, self.preview_pane()].spacing(2).height(Length::Fill).into()
+        } else {
+            editor.into()
+        };
         layout = if self.window_style == WindowStyle::Vertical && self.window_count() > 1 {
             layout.push(row![self.window_list(), editor].height(Length::Fill))
         } else {
@@ -2974,6 +3094,7 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
         Key::Named(key::Named::F2) => Some(Message::Save),
         Key::Named(key::Named::F3) if modifiers.alt() => Some(Message::CloseWindow),
         Key::Named(key::Named::F3) => Some(Message::Open),
+        Key::Named(key::Named::F6) if modifiers.alt() => Some(Message::TogglePreview),
         Key::Named(key::Named::F6) if modifiers.shift() => Some(Message::PrevWindow),
         Key::Named(key::Named::F6) => Some(Message::NextWindow),
         Key::Named(key::Named::F5) if modifiers.alt() => Some(Message::OutputToggle),
@@ -2985,6 +3106,7 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
             Some('x') if modifiers.alt() => Some(Message::Exit),
             Some('m') if modifiers.alt() => Some(Message::ToggleMatchCase),
             Some('0') if modifiers.alt() => Some(Message::OpenMenu(Menu::Window)),
+            Some('p') if modifiers.alt() && !modifiers.control() => Some(Message::TogglePreview),
             Some(c @ '1'..='9') if modifiers.alt() => Some(Message::SelectWindow(c as usize - '1' as usize)),
             Some(c) if modifiers.alt() && !modifiers.control() => Menu::from_hotkey(c).map(Message::OpenMenu),
             Some('s') if modifiers.command() => Some(Message::Save),
@@ -3076,6 +3198,38 @@ fn save_as_dialog(after: AfterSave, name: String, ext: String) -> Task<Message> 
 }
 
 /// The "choose a language" list.
+/// What a click on a link in the preview should do.
+#[derive(Debug, PartialEq)]
+enum LinkTarget {
+    /// A web address (or mail address): the system's browser opens it.
+    Web(String),
+    /// A file next to the document: it opens in a window.
+    File(PathBuf),
+    /// `#heading` inside the document.
+    Heading,
+    Unknown,
+}
+
+/// Only http, https and mailto go to the browser; anything else that is not a
+/// file next to the document is refused.
+fn classify_link(url: &str, doc_dir: Option<&Path>) -> LinkTarget {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:") {
+        return LinkTarget::Web(url.to_string());
+    }
+    if url.starts_with('#') {
+        return LinkTarget::Heading;
+    }
+    let file = url.split('#').next().unwrap_or("").replace("%20", " ");
+    match doc_dir {
+        Some(dir) if !file.is_empty() && !lower.contains("://") => {
+            let candidate = dir.join(file);
+            if candidate.is_file() { LinkTarget::File(candidate) } else { LinkTarget::Unknown }
+        }
+        _ => LinkTarget::Unknown,
+    }
+}
+
 /// The two ends of the legacy window title line: the file name on the left
 /// and the window number on the right, joined by the frame line.
 fn legacy_title_text(name: &str, number: usize, count: usize) -> (String, String) {
@@ -4075,5 +4229,160 @@ mod window_style_tests {
             send(&mut ide, [Message::SelectWindow(0)]);
             assert_eq!(ide.active, 0, "{style:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
+        for message in messages {
+            let _ = ide.update(message);
+        }
+    }
+
+    fn type_text(ide: &mut Ide, text: &str) {
+        for c in text.chars() {
+            let action = if c == '\n' { Edit::Enter } else { Edit::Insert(c) };
+            send(ide, [Message::Edit(Action::Edit(action))]);
+        }
+    }
+
+    fn markdown_window() -> Ide {
+        let mut ide = Ide::default();
+        ide.untitled_ext = Some("md");
+        ide
+    }
+
+    #[test]
+    fn the_preview_is_only_for_markdown_windows() {
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::TogglePreview]);
+        assert!(!ide.preview, "a Rust window has no preview");
+        assert_eq!(ide.status, "The preview is for Markdown (.md) files");
+
+        let mut ide = markdown_window();
+        send(&mut ide, [Message::TogglePreview]);
+        assert!(ide.preview && ide.preview_visible());
+        assert_eq!(ide.status, "Markdown preview on");
+        send(&mut ide, [Message::TogglePreview]);
+        assert!(!ide.preview_visible());
+        assert_eq!(ide.status, "Markdown preview off");
+    }
+
+    #[test]
+    fn markdown_is_recognised_by_name_or_chosen_type() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("preview-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, expected) in [("a.md", true), ("b.MD", true), ("c.markdown", true), ("d.txt", false), ("e.rs", false)] {
+            let path = dir.join(name);
+            std::fs::write(&path, "x\n").unwrap();
+            let mut ide = Ide::default();
+            ide.open_path(&path);
+            assert_eq!(ide.is_markdown(), expected, "{name}");
+        }
+        assert!(markdown_window().is_markdown());
+        assert!(!Ide::default().is_markdown());
+    }
+
+    #[test]
+    fn the_preview_follows_what_is_typed() {
+        let mut ide = markdown_window();
+        send(&mut ide, [Message::TogglePreview]);
+        assert!(ide.preview_content.items().is_empty());
+        type_text(&mut ide, "# Title");
+        assert_eq!(ide.preview_content.items().len(), 1);
+        type_text(&mut ide, "\n\nSome **bold** text\n\n- one\n- two");
+        let kinds: Vec<&str> = ide
+            .preview_content
+            .items()
+            .iter()
+            .map(|item| match item {
+                markdown::Item::Heading(..) => "heading",
+                markdown::Item::Paragraph(_) => "paragraph",
+                markdown::Item::List { .. } => "list",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["heading", "paragraph", "list"]);
+        assert_eq!(ide.preview_source, ide.content.text());
+        let _ = ide.view();
+    }
+
+    #[test]
+    fn the_preview_shows_only_with_the_markdown_window_active() {
+        let mut ide = markdown_window();
+        send(&mut ide, [Message::TogglePreview]);
+        type_text(&mut ide, "# Notes");
+        // A second, Rust, window: no preview there, but it comes back on return.
+        send(&mut ide, [Message::New, Message::NewFileType(0)]);
+        assert_eq!(ide.window_count(), 2);
+        assert!(!ide.preview_visible());
+        send(&mut ide, [Message::SelectWindow(0)]);
+        assert!(ide.preview_visible());
+        assert_eq!(ide.preview_content.items().len(), 1, "the text is read again for this window");
+        let _ = ide.view();
+    }
+
+    #[test]
+    fn keys_and_menu_item() {
+        let physical = key::Physical::Unidentified(key::NativeCode::Unidentified);
+        assert!(matches!(
+            shortcut(&Key::Named(key::Named::F6), physical, Modifiers::ALT),
+            Some(Message::TogglePreview)
+        ));
+        assert!(matches!(
+            shortcut(&Key::Named(key::Named::F6), physical, Modifiers::empty()),
+            Some(Message::NextWindow)
+        ));
+        assert!(matches!(
+            shortcut(&Key::Character("p".into()), physical, Modifiers::ALT),
+            Some(Message::TogglePreview)
+        ));
+        let on = Toggles { preview: true, ..Toggles::default() };
+        let items = menu_items(Menu::Window, on, &["a.md".to_string()], 0);
+        let item = items.iter().find(|i| i.label.starts_with("Markdown preview")).expect("menu item");
+        assert!(item.label.ends_with("[x]") && item.hotkey == 'm' && item.keys == "Alt+F6");
+        let items = menu_items(Menu::Window, Toggles::default(), &["a.md".to_string()], 0);
+        assert!(items.iter().any(|i| i.label.starts_with("Markdown preview") && i.label.ends_with("[ ]")));
+        assert!(SHORTCUTS.iter().any(|(_, keys, _)| keys.contains("Alt+F6")));
+    }
+
+    #[test]
+    fn links_open_in_the_browser_or_as_files_and_nothing_else() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("preview-links");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("other doc.md"), "# Other\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "plain\n").unwrap();
+        let d = Some(dir.as_path());
+        assert_eq!(classify_link("https://example.com/a?b=1", d), LinkTarget::Web("https://example.com/a?b=1".into()));
+        assert_eq!(classify_link("HTTP://Example.com", d), LinkTarget::Web("HTTP://Example.com".into()));
+        assert_eq!(classify_link("mailto:me@example.com", d), LinkTarget::Web("mailto:me@example.com".into()));
+        assert_eq!(classify_link("#install", d), LinkTarget::Heading);
+        assert_eq!(classify_link("notes.txt", d), LinkTarget::File(dir.join("notes.txt")));
+        assert_eq!(classify_link("other%20doc.md#top", d), LinkTarget::File(dir.join("other doc.md")));
+        assert_eq!(classify_link("missing.md", d), LinkTarget::Unknown);
+        assert_eq!(classify_link("notes.txt", None), LinkTarget::Unknown, "an unsaved document has no folder");
+        for refused in ["file:///C:/Windows/notepad.exe", "ms-settings:privacy", "javascript:alert(1)", "ftp://host/x"] {
+            assert_eq!(classify_link(refused, d), LinkTarget::Unknown, "{refused}");
+        }
+    }
+
+    #[test]
+    fn clicking_a_file_link_opens_it_in_a_window() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("preview-links2");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.md"), "[next](next.md)\n").unwrap();
+        std::fs::write(dir.join("next.md"), "# Next\n").unwrap();
+        let mut ide = Ide::default();
+        ide.open_path(&dir.join("main.md"));
+        send(&mut ide, [Message::PreviewLink("next.md".into())]);
+        assert_eq!(ide.window_names(), ["main.md", "next.md"]);
+        assert_eq!(ide.content.text(), "# Next\n");
+        send(&mut ide, [Message::PreviewLink("#top".into())]);
+        assert_eq!(ide.status, "Links to a heading are not followed yet");
+        send(&mut ide, [Message::PreviewLink("gone.md".into())]);
+        assert_eq!(ide.status, "Cannot open the link: gone.md");
     }
 }
