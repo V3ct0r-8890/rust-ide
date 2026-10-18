@@ -82,6 +82,8 @@ A Turbo Pascal-style IDE for Rust and Python, with two front ends over one libra
 - Repo: https://github.com/V3ct0r-8890/rust-ide (public). Work on `main`; commit and push when
   a feature is done and tested.
 - Keep `README.md` (keys, features), `docs/INSTALL.md` and `docs/ROADMAP.md` current with changes.
+- The owner tests builds by hand, and files they save (like `test.py`) can land in the project
+  folder. Look at `git status` before committing and stage files by name; never commit them.
 - **Handing work over for the user to verify (standing rule from the owner):** build the
   executables first and leave them in the project folder with the release number in the file
   names: `powershell -File packaging\package-windows.ps1` writes `dist\rust-ide-<version>.exe`,
