@@ -101,13 +101,17 @@ programs should.
 ## Vim mode
 
 Turn it on in **Options > Vim mode** (remembered between sessions). The status bar shows
-`NORMAL`, `-- INSERT --` or `-- VISUAL --` and any pending command. Supported:
+`NORMAL`, `-- INSERT --`, `-- VISUAL --` or `-- VISUAL LINE --` and any pending command. Supported:
 
 - Modes: `i a I A o O s S` to insert, `Esc` back to Normal, `v` for Visual
 - Motions (with counts): `h j k l w b e 0 ^ $ gg G`, `Ctrl+D`/`Ctrl+U`
+- Find on the line: `f{c} t{c} F{c} T{c}` (e.g. `dt)`, `2f,`), `;` repeats, `,` reverses
 - Operators with motions: `d c y > <` (e.g. `dw`, `c$`, `y2j`, `dG`), doubled for lines (`dd`, `3yy`, `>>`)
+- Text objects after an operator: `iw aw iW aW`, quotes `i" a" i' a'`, backticks, `i( a( ib ab`, `i[ a[`, `i{ a{ iB aB`, `i< a<` (e.g. `ciw`, `di(`, `da"`, `yi{`)
 - Editing: `x X D C Y p P J r<char> u Ctrl+R`
-- Visual: motions, then `d x y c > <`
+- Repeat: `.` repeats the last change made in Normal mode (`dw`, `ciw` + typed text, `A` + text, `x`, `p`, ...)
+- Marks: `m{a-z}` sets one, `'{a-z}` jumps to its line, `` `{a-z} `` to its exact place; they work with operators (`d'a`) and do not move when text changes
+- Visual: `v` (characters) or `V` (whole lines); motions, `iw`/`i(`-style objects, `o` to swap ends, then `d x y c > <`
 - Search: `/text` then `n` / `N`
 - Commands: `:w`, `:q`, `:q!`, `:wq`, `:x`, `:<line>`
 
@@ -128,12 +132,12 @@ To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging
 
 ## Status
 
-Done: Markdown preview, window style (legacy / horizontal / vertical tabs), syntax check (Alt+F9), terminal version `rust-ide-tui`, several open files (tabs, F6, Window menu), debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
+Done: more Vim commands, font size, Markdown preview, window style (legacy / horizontal / vertical tabs), syntax check (Alt+F9), terminal version `rust-ide-tui`, several open files (tabs, F6, Window menu), debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
 and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
 Windows and Linux packages.
 
 Next, easiest first:
-font size, more Vim commands, new-project templates (Simple / Low / Medium / Complex for Rust and
+new-project templates (Simple / Low / Medium / Complex for Rust and
 Python), the rest of the terminal version, C# support.
 
 See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limitations.

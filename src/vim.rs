@@ -1,10 +1,12 @@
-//! A basic Vim emulation on top of iced's text editor: Normal, Insert and
-//! Visual modes, counts, d/c/y/>/< operators with motions, registers,
+//! A basic Vim emulation on top of iced's text editor: Normal, Insert,
+//! Visual and Visual-line modes, counts, d/c/y/>/< operators with motions
+//! and text objects, `.` repeat, f/t/F/T with `;` `,`, marks, registers,
 //! `/` search and a few `:` commands.
 //!
 //! Editor columns are byte offsets into the line (as in iced/cosmic-text);
 //! helpers below keep every offset on a character boundary.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use iced::widget::text_editor::{Action, Content, Cursor, Edit, Motion, Position};
@@ -15,6 +17,7 @@ pub enum Mode {
     Normal,
     Insert,
     Visual,
+    VisualLine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +55,27 @@ pub struct Vim {
     search: String,
     /// Where Visual mode started.
     anchor: Position,
+    /// Last `f`/`t`/`F`/`T` and its character, for `;` and `,`.
+    last_find: Option<(char, char)>,
+    /// Marks `a`-`z` (not adjusted when text changes).
+    marks: HashMap<char, Position>,
+    /// The last change, for `.`.
+    last_change: Option<Change>,
+    /// Keys of the command being typed, and whether it is being recorded.
+    current: Vec<Key>,
+    recording: bool,
+    changed: bool,
+    insert_start: Option<Position>,
+    replaying: bool,
+    /// A status message the command wants shown.
+    message: Option<String>,
+}
+
+/// A repeatable change: the keys that made it and the text typed in Insert mode.
+#[derive(Clone)]
+struct Change {
+    keys: Vec<Key>,
+    insert: Option<String>,
 }
 
 /// A motion and how far it goes.
@@ -64,6 +88,8 @@ enum Target {
     Lines(isize),
     /// An absolute line, line-wise.
     Line(usize),
+    /// An absolute position; `true` when an operator includes the character there.
+    Pos(Position, bool),
 }
 
 impl Default for Vim {
@@ -76,6 +102,15 @@ impl Default for Vim {
             command: None,
             search: String::new(),
             anchor: Position { line: 0, column: 0 },
+            last_find: None,
+            marks: HashMap::new(),
+            last_change: None,
+            current: Vec::new(),
+            recording: false,
+            changed: false,
+            insert_start: None,
+            replaying: false,
+            message: None,
         }
     }
 }
@@ -90,11 +125,93 @@ impl Vim {
             Mode::Normal => "NORMAL",
             Mode::Insert => "-- INSERT --",
             Mode::Visual => "-- VISUAL --",
+            Mode::VisualLine => "-- VISUAL LINE --",
         };
         if self.pending.is_empty() { mode.into() } else { format!("{mode} {}", self.pending) }
     }
 
     pub fn key(&mut self, key: Key, c: &mut Content) -> Vec<Effect> {
+        if self.replaying {
+            return self.dispatch(key, c);
+        }
+        let idle = self.mode == Mode::Normal && self.pending.is_empty() && self.command.is_none();
+        if idle && key == Key::Char('.') {
+            return self.repeat(c);
+        }
+        if idle {
+            self.current.clear();
+            self.recording = true;
+            self.changed = false;
+            self.insert_start = None;
+        }
+        let was_insert = self.mode == Mode::Insert;
+        // Insert mode ends here; the cursor then marks the end of the typed text.
+        let esc_at = (was_insert && key == Key::Esc).then(|| c.cursor().position);
+        if self.recording && !was_insert {
+            self.current.push(key);
+        }
+
+        let mut effects = self.dispatch(key, c);
+
+        if effects.contains(&Effect::Edited) {
+            self.changed = true;
+        }
+        if matches!(self.mode, Mode::Visual | Mode::VisualLine) {
+            self.recording = false;
+        }
+        if self.recording && !was_insert && self.mode == Mode::Insert {
+            self.changed = true;
+            self.insert_start = Some(c.cursor().position);
+        }
+        let mut inserted = None;
+        if let Some(end) = esc_at
+            && let Some(start) = self.insert_start.take()
+        {
+            let text = c.text();
+            let (a, b) = (offset_of(&text, start), offset_of(&text, end));
+            if a <= b && text.is_char_boundary(a) && text.is_char_boundary(b) {
+                inserted = Some(text[a..b].to_string());
+            }
+        }
+        if self.recording && self.mode == Mode::Normal && self.pending.is_empty() && self.command.is_none() {
+            if self.changed {
+                self.last_change = Some(Change { keys: self.current.clone(), insert: inserted });
+            }
+            self.recording = false;
+        }
+        if let Some(message) = self.message.take() {
+            effects.push(Effect::Status(message));
+        }
+        effects
+    }
+
+    /// `.`: runs the last change again.
+    fn repeat(&mut self, c: &mut Content) -> Vec<Effect> {
+        let Some(change) = self.last_change.clone() else { return Vec::new() };
+        self.replaying = true;
+        let mut effects = Vec::new();
+        for key in &change.keys {
+            effects.extend(self.dispatch(*key, c));
+        }
+        if self.mode == Mode::Insert {
+            if let Some(text) = change.insert.filter(|t| !t.is_empty()) {
+                c.perform(Action::Edit(Edit::Paste(Arc::new(text))));
+                effects.push(Effect::Edited);
+            }
+            effects.extend(self.dispatch(Key::Esc, c));
+        }
+        self.replaying = false;
+        self.pending.clear();
+        self.command = None;
+        self.mode = Mode::Normal;
+        if effects.contains(&Effect::Edited) {
+            effects.retain(|e| *e != Effect::Edited);
+            effects.push(Effect::Edited);
+        }
+        effects
+    }
+
+    fn dispatch(&mut self, key: Key, c: &mut Content) -> Vec<Effect> {
         if self.command.is_some() {
             return self.command_key(key, c);
         }
@@ -109,7 +226,7 @@ impl Vim {
                 Vec::new()
             }
             Mode::Normal => self.normal(key, c),
-            Mode::Visual => self.visual(key, c),
+            Mode::Visual | Mode::VisualLine => self.visual(key, c),
         }
     }
 
@@ -129,28 +246,28 @@ impl Vim {
             Key::Char(ch) => ch,
         };
 
-        if self.pending.ends_with('r') && !self.pending.ends_with("rr") {
+        let (op, prefix) = self.split_pending();
+        if prefix == Some('r') {
             let (count, _) = self.take_pending();
             return replace_chars(c, ch, count);
         }
-        let digits = self.pending.chars().all(|d| d.is_ascii_digit());
-        if ch.is_ascii_digit() && digits && (ch != '0' || !self.pending.is_empty()) {
-            self.pending.push(ch);
+        if prefix == Some('m') {
+            self.take_pending();
+            self.set_mark(ch, c);
             return Vec::new();
         }
-
-        let operator = self.pending.trim_start_matches(|d: char| d.is_ascii_digit()).to_string();
-        let g = operator.ends_with('g');
-        let op = operator.trim_end_matches('g').chars().next();
-
-        // Keys that only extend the pending command.
-        if ch == 'g' && !g {
-            self.pending.push('g');
-            return Vec::new();
-        }
-        if op.is_none() && !g && matches!(ch, 'd' | 'c' | 'y' | '>' | '<' | 'r') {
-            self.pending.push(ch);
-            return Vec::new();
+        if prefix.is_none() {
+            if ch.is_ascii_digit() && op.is_none() && (ch != '0' || !self.pending.is_empty()) {
+                self.pending.push(ch);
+                return Vec::new();
+            }
+            let extends = matches!(ch, 'g' | 'f' | 't' | 'F' | 'T' | '\'' | '`')
+                || (op.is_none() && matches!(ch, 'd' | 'c' | 'y' | '>' | '<' | 'r' | 'm'))
+                || (op.is_some() && matches!(ch, 'i' | 'a'));
+            if extends {
+                self.pending.push(ch);
+                return Vec::new();
+            }
         }
 
         let (count, has_count) = self.take_pending();
@@ -158,18 +275,22 @@ impl Vim {
 
         // Doubled operator: dd, cc, yy, >>, <<
         if let Some(op) = op
+            && prefix.is_none()
             && ch == op
         {
             return self.lines_op(op, line, line + count - 1, c);
         }
+        if let (Some(op), Some(kind @ ('i' | 'a'))) = (op, prefix) {
+            return self.object_op(op, kind, ch, c);
+        }
 
-        if let Some(target) = target(ch, g, count, has_count, c) {
+        if let Some(target) = self.motion(prefix, ch, count, has_count, c) {
             return match op {
                 None => go(c, target),
                 Some(op) => self.operate(op, target, c),
             };
         }
-        if op.is_some() || g {
+        if op.is_some() || prefix.is_some() {
             return Vec::new(); // unknown motion after an operator: cancel
         }
 
@@ -223,6 +344,12 @@ impl Vim {
                 self.anchor = c.cursor().position;
                 Vec::new()
             }
+            'V' => {
+                self.mode = Mode::VisualLine;
+                self.anchor = c.cursor().position;
+                self.show_selection(c);
+                Vec::new()
+            }
             'n' => self.find_next(c, true),
             'N' => self.find_next(c, false),
             ':' | '/' => {
@@ -245,30 +372,58 @@ impl Vim {
             Key::Delete => 'x',
             Key::Ctrl(_) => return Vec::new(),
         };
-        let digits = self.pending.chars().all(|d| d.is_ascii_digit());
-        if ch.is_ascii_digit() && digits && (ch != '0' || !self.pending.is_empty()) {
-            self.pending.push(ch);
+        let (_, prefix) = self.split_pending();
+        if prefix == Some('m') {
+            self.take_pending();
+            self.set_mark(ch, c);
             return Vec::new();
         }
-        let g = self.pending.ends_with('g');
-        if ch == 'g' && !g {
-            self.pending.push('g');
-            return Vec::new();
+        if prefix.is_none() {
+            if ch.is_ascii_digit() && (ch != '0' || !self.pending.is_empty()) {
+                self.pending.push(ch);
+                return Vec::new();
+            }
+            if matches!(ch, 'g' | 'f' | 't' | 'F' | 'T' | '\'' | '`' | 'm' | 'i' | 'a') {
+                self.pending.push(ch);
+                return Vec::new();
+            }
         }
         let (count, has_count) = self.take_pending();
+        if let Some(kind @ ('i' | 'a')) = prefix {
+            self.visual_object(kind, ch, c);
+            return Vec::new();
+        }
 
-        if let Some(target) = target(ch, g, count, has_count, c) {
+        if let Some(target) = self.motion(prefix, ch, count, has_count, c) {
             // Move the free end from the cursor (not from the selection edge).
             let position = c.cursor().position;
             place(c, position);
             go(c, target);
-            let position = c.cursor().position;
-            c.move_to(Cursor { position, selection: Some(self.anchor) });
+            self.show_selection(c);
+            return Vec::new();
+        }
+        if prefix.is_some() {
             return Vec::new();
         }
 
+        let line_mode = self.mode == Mode::VisualLine;
+        let cursor = c.cursor().position;
+        let (lo, hi) = (self.anchor.line.min(cursor.line), self.anchor.line.max(cursor.line));
         let (from, to) = self.visual_range(c);
         match ch {
+            'd' | 'x' | 'c' | 's' | 'y' if line_mode => {
+                let op = match ch {
+                    'x' => 'd',
+                    's' => 'c',
+                    other => other,
+                };
+                self.mode = Mode::Normal;
+                let effects = self.lines_op(op, lo, hi, c);
+                if op == 'y' {
+                    place(c, Position { line: lo, column: 0 });
+                }
+                effects
+            }
             'd' | 'x' | 'c' | 's' | 'y' => {
                 select(c, from, to);
                 self.register = c.selection().unwrap_or_default();
@@ -283,16 +438,130 @@ impl Vim {
                 vec![Effect::Edited]
             }
             '>' | '<' => {
-                let effects = indent(c, from.line, to.line, ch == '>');
+                let (first, last) = if line_mode { (lo, hi) } else { (from.line, to.line) };
+                let effects = indent(c, first, last, ch == '>');
                 self.mode = Mode::Normal;
                 effects
             }
-            'v' => {
-                self.leave_visual(c);
+            'v' | 'V' => {
+                let wanted = if ch == 'v' { Mode::Visual } else { Mode::VisualLine };
+                if self.mode == wanted {
+                    self.leave_visual(c);
+                } else {
+                    self.mode = wanted;
+                    self.show_selection(c);
+                }
+                Vec::new()
+            }
+            'o' => {
+                let position = c.cursor().position;
+                let other = self.anchor;
+                self.anchor = position;
+                place(c, other);
+                self.show_selection(c);
                 Vec::new()
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Splits the pending keys (after any count) into an operator and a prefix key.
+    fn split_pending(&self) -> (Option<char>, Option<char>) {
+        let rest = self.pending.trim_start_matches(|d: char| d.is_ascii_digit());
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(op) if matches!(op, 'd' | 'c' | 'y' | '>' | '<') => (Some(op), chars.next()),
+            first => (None, first),
+        }
+    }
+
+    fn set_mark(&mut self, name: char, c: &Content) {
+        if name.is_ascii_lowercase() {
+            self.marks.insert(name, c.cursor().position);
+        }
+    }
+
+    /// Resolves a motion: plain keys, `g` motions, `f`/`t`/`F`/`T`, marks, `;` and `,`.
+    fn motion(&mut self, prefix: Option<char>, ch: char, count: usize, has_count: bool, c: &Content) -> Option<Target> {
+        match prefix {
+            Some('g') => return target(ch, true, count, has_count, c),
+            Some(kind @ ('f' | 't' | 'F' | 'T')) => {
+                self.last_find = Some((kind, ch));
+                return find_target(c, kind, ch, count, false);
+            }
+            Some(kind @ ('\'' | '`')) => {
+                let Some(&mark) = self.marks.get(&ch) else {
+                    self.message = Some("E20: Mark not set".into());
+                    return None;
+                };
+                let mark = clamp(c, mark);
+                return Some(if kind == '\'' { Target::Line(mark.line) } else { Target::Pos(mark, false) });
+            }
+            Some(_) => return None,
+            None => {}
+        }
+        match ch {
+            ';' | ',' => {
+                let (kind, found) = self.last_find?;
+                let kind = if ch == ',' {
+                    match kind {
+                        'f' => 'F',
+                        'F' => 'f',
+                        't' => 'T',
+                        _ => 't',
+                    }
+                } else {
+                    kind
+                };
+                find_target(c, kind, found, count, true)
+            }
+            _ => target(ch, false, count, has_count, c),
+        }
+    }
+
+    /// Shows the Visual selection: from the anchor, or whole lines in line mode.
+    fn show_selection(&self, c: &mut Content) {
+        let position = c.cursor().position;
+        let anchor = self.anchor;
+        let selection = if self.mode == Mode::VisualLine {
+            if (position.line, position.column) >= (anchor.line, anchor.column) {
+                Position { line: anchor.line, column: 0 }
+            } else {
+                end_of(c, anchor.line)
+            }
+        } else {
+            anchor
+        };
+        c.move_to(Cursor { position, selection: Some(selection) });
+    }
+
+    /// `i`/`a` text object after an operator.
+    fn object_op(&mut self, op: char, kind: char, obj: char, c: &mut Content) -> Vec<Effect> {
+        let text = c.text();
+        let here = offset_of(&text, c.cursor().position);
+        let Some(found) = text_object(&text, here, kind == 'a', obj) else { return Vec::new() };
+        // `ci{` on a multi-line block keeps the line break before the closing brace.
+        let to = if found.block_lines && op == 'c' { found.to - 1 } else { found.to };
+        let effects = self.operate_range(op, position_of(&text, found.from), position_of(&text, to), c);
+        if found.block_lines && op != 'c' {
+            self.linewise = true;
+        }
+        effects
+    }
+
+    /// `i`/`a` text object in Visual mode: selects it.
+    fn visual_object(&mut self, kind: char, obj: char, c: &mut Content) {
+        let text = c.text();
+        let here = offset_of(&text, c.cursor().position);
+        let Some(found) = text_object(&text, here, kind == 'a', obj) else { return };
+        if found.to <= found.from {
+            return;
+        }
+        let Some((last, _)) = text[..found.to].char_indices().next_back() else { return };
+        self.mode = Mode::Visual;
+        self.anchor = position_of(&text, found.from);
+        place(c, position_of(&text, last));
+        self.show_selection(c);
     }
 
     fn leave_visual(&mut self, c: &mut Content) {
@@ -383,29 +652,43 @@ impl Vim {
                 if matches!(op, '>' | '<') {
                     return indent(c, start.line, start.line, op == '>');
                 }
+                let inclusive = matches!(target, Target::Pos(_, true));
                 go(c, target);
                 let end = c.cursor().position;
-                let (from, to) = ordered(start, end);
-                select(c, from, to);
-                self.register = c.selection().unwrap_or_default();
-                self.linewise = false;
-                match op {
-                    'y' => {
-                        place(c, from);
-                        Vec::new()
-                    }
-                    _ => {
-                        if from != to {
-                            c.perform(Action::Edit(Edit::Delete));
-                        } else {
-                            place(c, from);
-                        }
-                        if op == 'c' {
-                            self.mode = Mode::Insert;
-                        }
-                        vec![Effect::Edited]
-                    }
+                let (from, mut to) = ordered(start, end);
+                if inclusive && (end.line, end.column) > (start.line, start.column) {
+                    to = next_char(c, to);
                 }
+                self.operate_range(op, from, to, c)
+            }
+        }
+    }
+
+    /// Applies operator `op` to the character range `from..to`.
+    fn operate_range(&mut self, op: char, from: Position, to: Position, c: &mut Content) -> Vec<Effect> {
+        if matches!(op, '>' | '<') {
+            return indent(c, from.line, to.line, op == '>');
+        }
+        if from != to {
+            select(c, from, to);
+            self.register = c.selection().unwrap_or_default();
+            self.linewise = false;
+        }
+        match op {
+            'y' => {
+                place(c, from);
+                Vec::new()
+            }
+            _ => {
+                if from != to {
+                    c.perform(Action::Edit(Edit::Delete));
+                } else {
+                    place(c, from);
+                }
+                if op == 'c' {
+                    self.mode = Mode::Insert;
+                }
+                vec![Effect::Edited]
             }
         }
     }
@@ -541,6 +824,7 @@ fn go(c: &mut Content, target: Target) -> Vec<Effect> {
             let column = first_non_blank(&line_text(c, line));
             place(c, Position { line, column });
         }
+        Target::Pos(position, _) => place(c, position),
     }
     Vec::new()
 }
@@ -681,6 +965,202 @@ fn position_of(text: &str, offset: usize) -> Position {
     Position { line, column }
 }
 
+/// Keeps a stored position inside the text (marks do not follow edits).
+fn clamp(c: &Content, p: Position) -> Position {
+    let line = p.line.min(c.line_count().saturating_sub(1));
+    let text = line_text(c, line);
+    let mut column = p.column.min(text.len());
+    while !text.is_char_boundary(column) {
+        column -= 1;
+    }
+    Position { line, column }
+}
+
+/// `f`/`t`/`F`/`T` on the current line. `repeat` is `;` / `,`: `t` and `T`
+/// then skip a match right next to the cursor.
+fn find_target(c: &Content, kind: char, wanted: char, count: usize, repeat: bool) -> Option<Target> {
+    let at = c.cursor().position;
+    let text = line_text(c, at.line);
+    let column = find_char(&text, at.column, kind, wanted, count, repeat)?;
+    Some(Target::Pos(Position { line: at.line, column }, matches!(kind, 'f' | 't')))
+}
+
+fn find_char(text: &str, from: usize, kind: char, wanted: char, count: usize, repeat: bool) -> Option<usize> {
+    let from = from.min(text.len());
+    if matches!(kind, 'f' | 't') {
+        let start = advance(text, from, 1);
+        let next_len = text[start..].chars().next().map_or(0, char::len_utf8);
+        let skip_adjacent = repeat && kind == 't';
+        let found = text[start..]
+            .char_indices()
+            .filter(|&(i, ch)| ch == wanted && !(skip_adjacent && i < next_len))
+            .nth(count.saturating_sub(1))?
+            .0;
+        let at = start + found;
+        Some(if kind == 'f' { at } else { retreat(text, at, 1) })
+    } else {
+        let before_len = text[..from].chars().next_back().map_or(0, char::len_utf8);
+        let skip_adjacent = repeat && kind == 'T';
+        let at = text[..from]
+            .char_indices()
+            .rev()
+            .filter(|&(i, ch)| ch == wanted && !(skip_adjacent && i + before_len == from))
+            .nth(count.saturating_sub(1))?
+            .0;
+        Some(if kind == 'F' { at } else { advance(text, at, 1) })
+    }
+}
+
+/// A text object found by `text_object`: the byte range `from..to`.
+struct Found {
+    from: usize,
+    to: usize,
+    /// The inside of a multi-line block whose closing bracket is on its own
+    /// line: the range ends at that line's start, so `d` leaves `{` and `}`.
+    block_lines: bool,
+}
+
+fn found(from: usize, to: usize) -> Option<Found> {
+    Some(Found { from, to, block_lines: false })
+}
+
+/// The text object `obj` (the key after `i` / `a`) around byte offset `here`.
+fn text_object(text: &str, here: usize, around: bool, obj: char) -> Option<Found> {
+    match obj {
+        'w' => word_object(text, here, around, false),
+        'W' => word_object(text, here, around, true),
+        '"' | '\'' | '`' => quote_object(text, here, around, obj),
+        '(' | ')' | 'b' => bracket_object(text, here, around, b'(', b')'),
+        '[' | ']' => bracket_object(text, here, around, b'[', b']'),
+        '{' | '}' | 'B' => bracket_object(text, here, around, b'{', b'}'),
+        '<' | '>' => bracket_object(text, here, around, b'<', b'>'),
+        _ => None,
+    }
+}
+
+fn line_bounds(text: &str, here: usize) -> (usize, usize) {
+    let start = text[..here].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[here..].find('\n').map_or(text.len(), |i| here + i);
+    (start, end)
+}
+
+fn word_object(text: &str, here: usize, around: bool, big: bool) -> Option<Found> {
+    let (ls, le) = line_bounds(text, here);
+    let chars: Vec<(usize, char)> = text[ls..le].char_indices().map(|(i, ch)| (ls + i, ch)).collect();
+    let at = chars.iter().position(|&(offset, _)| offset == here)?;
+    let class = |i: usize| {
+        let ch = chars[i].1;
+        if ch.is_whitespace() {
+            0
+        } else if big || !ch.is_ascii_punctuation() || ch == '_' {
+            1
+        } else {
+            2
+        }
+    };
+    let (mut a, mut b) = (at, at);
+    while a > 0 && class(a - 1) == class(at) {
+        a -= 1;
+    }
+    while b + 1 < chars.len() && class(b + 1) == class(at) {
+        b += 1;
+    }
+    if around {
+        if class(at) == 0 {
+            if b + 1 < chars.len() {
+                let next = class(b + 1);
+                while b + 1 < chars.len() && class(b + 1) == next {
+                    b += 1;
+                }
+            }
+        } else if b + 1 < chars.len() && class(b + 1) == 0 {
+            while b + 1 < chars.len() && class(b + 1) == 0 {
+                b += 1;
+            }
+        } else {
+            while a > 0 && class(a - 1) == 0 {
+                a -= 1;
+            }
+        }
+    }
+    found(chars[a].0, chars[b].0 + chars[b].1.len_utf8())
+}
+
+fn quote_object(text: &str, here: usize, around: bool, quote: char) -> Option<Found> {
+    let (ls, le) = line_bounds(text, here);
+    let line = &text[ls..le];
+    let mut quotes = Vec::new();
+    let mut escaped = false;
+    for (i, ch) in line.char_indices() {
+        if ch == quote && !escaped {
+            quotes.push(ls + i);
+        }
+        escaped = ch == '\\' && !escaped;
+    }
+    let pair = quotes.chunks_exact(2).find(|pair| pair[1] >= here)?;
+    let (open, close) = (pair[0], pair[1]);
+    if !around {
+        return found(open + 1, close);
+    }
+    let after = &text[close + 1..le];
+    let blanks = after.len() - after.trim_start_matches([' ', '\t']).len();
+    if blanks > 0 {
+        return found(open, close + 1 + blanks);
+    }
+    let before = &text[ls..open];
+    let blanks = before.len() - before.trim_end_matches([' ', '\t']).len();
+    found(open - blanks, close + 1)
+}
+
+fn bracket_object(text: &str, here: usize, around: bool, open: u8, close: u8) -> Option<Found> {
+    let bytes = text.as_bytes();
+    let start = if bytes.get(here) == Some(&open) {
+        here
+    } else {
+        let (mut i, mut depth) = (here, 0usize);
+        loop {
+            if i == 0 {
+                return None;
+            }
+            i -= 1;
+            if bytes[i] == close {
+                depth += 1;
+            } else if bytes[i] == open {
+                if depth == 0 {
+                    break i;
+                }
+                depth -= 1;
+            }
+        }
+    };
+    let (mut j, mut depth) = (start + 1, 0usize);
+    let end = loop {
+        if j >= bytes.len() {
+            return None;
+        }
+        if bytes[j] == open {
+            depth += 1;
+        } else if bytes[j] == close {
+            if depth == 0 {
+                break j;
+            }
+            depth -= 1;
+        }
+        j += 1;
+    };
+    if around {
+        return found(start, end + 1);
+    }
+    let from = start + 1;
+    if bytes.get(from) == Some(&b'\n') {
+        let close_line = text[..end].rfind('\n').map_or(0, |i| i + 1);
+        if close_line > from && text[close_line..end].trim().is_empty() {
+            return Some(Found { from: from + 1, to: close_line, block_lines: close_line > from + 1 });
+        }
+    }
+    found(from, end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,5 +1254,169 @@ mod tests {
         assert_eq!(vim.key(Key::Enter, &mut c), vec![Effect::SaveQuit]);
         keys(&mut vim, &mut c, ":3\n");
         assert_eq!(c.cursor().position.line, 2);
+    }
+
+    fn typed(c: &mut Content, text: &str) {
+        c.perform(Action::Edit(Edit::Paste(Arc::new(text.to_string()))));
+    }
+
+    #[test]
+    fn visual_line_mode() {
+        let (mut vim, mut c) = editor("a\nb\nc\nd");
+        keys(&mut vim, &mut c, "Vjd");
+        assert_eq!(c.text(), "c\nd");
+        assert_eq!(vim.mode, Mode::Normal);
+        keys(&mut vim, &mut c, "p");
+        assert_eq!(c.text(), "c\na\nb\nd");
+        keys(&mut vim, &mut c, "GVky");
+        assert_eq!(vim.register, "b\nd\n");
+        assert_eq!(c.cursor().position.line, 2);
+        keys(&mut vim, &mut c, "ggV>");
+        assert_eq!(c.text(), "    c\na\nb\nd");
+        keys(&mut vim, &mut c, "Vv");
+        assert_eq!(vim.mode, Mode::Visual);
+        keys(&mut vim, &mut c, "\u{1b}");
+        keys(&mut vim, &mut c, "Vc");
+        assert_eq!(vim.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn dot_repeats_changes() {
+        let (mut vim, mut c) = editor("a b c d e f");
+        keys(&mut vim, &mut c, "df ");
+        keys(&mut vim, &mut c, ".");
+        assert_eq!(c.text(), "c d e f");
+        keys(&mut vim, &mut c, "x.");
+        assert_eq!(c.text(), "d e f");
+        keys(&mut vim, &mut c, "cw");
+        typed(&mut c, "XY");
+        keys(&mut vim, &mut c, "\u{1b}fe.");
+        assert_eq!(c.text(), "XY XY f");
+        let (mut vim, mut c) = editor("one\ntwo\nthree");
+        keys(&mut vim, &mut c, "A");
+        typed(&mut c, "!");
+        keys(&mut vim, &mut c, "\u{1b}j.");
+        assert_eq!(c.text(), "one!\ntwo!\nthree");
+        keys(&mut vim, &mut c, "jdd");
+        keys(&mut vim, &mut c, "gg.");
+        assert_eq!(c.text(), "two!");
+    }
+
+    #[test]
+    fn dot_ignores_motions_and_visual() {
+        let (mut vim, mut c) = editor("abcdef");
+        keys(&mut vim, &mut c, "xlll.");
+        assert_eq!(c.text(), "bcdf");
+        keys(&mut vim, &mut c, "0vld");
+        assert_eq!(c.text(), "df");
+        keys(&mut vim, &mut c, ".");
+        assert_eq!(c.text(), "f", "dot repeats the last Normal-mode change (x)");
+    }
+
+    #[test]
+    fn text_objects_words_and_quotes() {
+        let (mut vim, mut c) = editor("let foo_bar = \"hi there\";");
+        keys(&mut vim, &mut c, "f_ciw");
+        typed(&mut c, "x");
+        keys(&mut vim, &mut c, "\u{1b}");
+        assert_eq!(c.text(), "let x = \"hi there\";");
+        keys(&mut vim, &mut c, "f\"ldi\"");
+        assert_eq!(c.text(), "let x = \"\";");
+        let (mut vim, mut c) = editor("say \"a b\" now");
+        keys(&mut vim, &mut c, "da\"");
+        assert_eq!(c.text(), "say now");
+        let (mut vim, mut c) = editor("one two three");
+        keys(&mut vim, &mut c, "fwdaw");
+        assert_eq!(c.text(), "one three");
+        keys(&mut vim, &mut c, "yiwP");
+        assert_eq!(c.text(), "one threethree");
+    }
+
+    #[test]
+    fn text_objects_brackets() {
+        let (mut vim, mut c) = editor("f(a, (b), c)");
+        keys(&mut vim, &mut c, "fbdi(");
+        assert_eq!(c.text(), "f(a, (), c)");
+        keys(&mut vim, &mut c, "da(");
+        assert_eq!(c.text(), "f(a, , c)");
+        keys(&mut vim, &mut c, "ci(");
+        assert_eq!(vim.mode, Mode::Insert);
+        assert_eq!(c.text(), "f()");
+        let (mut vim, mut c) = editor("fn a() {\n    x;\n    y;\n}");
+        keys(&mut vim, &mut c, "jdi{");
+        assert_eq!(c.text(), "fn a() {\n}");
+        let (mut vim, mut c) = editor("v[1] <T>");
+        keys(&mut vim, &mut c, "fTci>");
+        assert_eq!(c.text(), "v[1] <>");
+        keys(&mut vim, &mut c, "\u{1b}0fdi[");
+        assert_eq!(c.text(), "v[1] <>");
+    }
+
+    #[test]
+    fn visual_text_objects() {
+        let (mut vim, mut c) = editor("a (bc) d");
+        keys(&mut vim, &mut c, "fbvi(d");
+        assert_eq!(c.text(), "a () d");
+        let (mut vim, mut c) = editor("one two");
+        keys(&mut vim, &mut c, "viwd");
+        assert_eq!(c.text(), " two");
+    }
+
+    #[test]
+    fn find_motions_and_repeat() {
+        let (mut vim, mut c) = editor("a,b,c,d");
+        keys(&mut vim, &mut c, "f,");
+        assert_eq!(col(&c), 1);
+        keys(&mut vim, &mut c, ";");
+        assert_eq!(col(&c), 3);
+        keys(&mut vim, &mut c, ",");
+        assert_eq!(col(&c), 1);
+        keys(&mut vim, &mut c, "$F,");
+        assert_eq!(col(&c), 5);
+        keys(&mut vim, &mut c, "0t,");
+        assert_eq!(col(&c), 0);
+        keys(&mut vim, &mut c, "t,");
+        assert_eq!(col(&c), 0);
+        keys(&mut vim, &mut c, ";");
+        assert_eq!(col(&c), 2, "; after t skips the adjacent match");
+        keys(&mut vim, &mut c, "02df,");
+        assert_eq!(c.text(), "c,d");
+        keys(&mut vim, &mut c, "dt,");
+        assert_eq!(c.text(), "c,d", "t next to the cursor does not move");
+        keys(&mut vim, &mut c, "df,");
+        assert_eq!(c.text(), "d");
+        let (mut vim, mut c) = editor("x,y");
+        keys(&mut vim, &mut c, "fydF,");
+        assert_eq!(c.text(), "xy");
+    }
+
+    #[test]
+    fn find_motion_dot_and_thai() {
+        let (mut vim, mut c) = editor("ไทย:ok:end");
+        keys(&mut vim, &mut c, "f:");
+        assert_eq!(col(&c), "ไทย".len());
+        keys(&mut vim, &mut c, "0dt:");
+        assert_eq!(c.text(), ":ok:end");
+        keys(&mut vim, &mut c, "l.");
+        assert_eq!(c.text(), "::end");
+    }
+
+    #[test]
+    fn marks() {
+        let (mut vim, mut c) = editor("one\n  two\nthree");
+        keys(&mut vim, &mut c, "j^ma");
+        keys(&mut vim, &mut c, "gg`a");
+        assert_eq!(c.cursor().position, Position { line: 1, column: 2 });
+        keys(&mut vim, &mut c, "G$'a");
+        assert_eq!(c.cursor().position, Position { line: 1, column: 2 });
+        keys(&mut vim, &mut c, "gg0d'a");
+        assert_eq!(c.text(), "three");
+        let effects = vim.key(Key::Char('\''), &mut c);
+        assert!(effects.is_empty());
+        let effects = vim.key(Key::Char('z'), &mut c);
+        assert_eq!(effects, vec![Effect::Status("E20: Mark not set".into())]);
+        let (mut vim, mut c) = editor("abcdef");
+        keys(&mut vim, &mut c, "llmb0d`b");
+        assert_eq!(c.text(), "cdef");
     }
 }

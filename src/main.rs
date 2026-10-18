@@ -92,8 +92,12 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Vim", "i a o O, Esc", "Insert mode, back to Normal"),
     ("Vim", "h j k l w b e 0 ^ $ gg G", "Motions (with counts)"),
     ("Vim", "d c y > < + motion", "Operators; dd yy cc >> << for lines"),
+    ("Vim", "f t F T + char, ; ,", "Find a character on the line; repeat / reverse"),
+    ("Vim", "iw aw i\" a\" i( a( i{ a{ i[ i<", "Text objects after d c y (and in Visual mode)"),
     ("Vim", "x X D C Y p P J r u Ctrl+R", "Editing"),
-    ("Vim", "v, /text, n N", "Visual mode, search"),
+    ("Vim", ".", "Repeat the last change"),
+    ("Vim", "m{a-z}  '{a-z}  `{a-z}", "Set a mark; jump to its line / exact place"),
+    ("Vim", "v V o, /text, n N", "Visual and Visual-line mode (o swaps ends), search"),
     ("Vim", ":w :q :q! :wq :<line>", "Commands"),
     ("Debug", "Ctrl+F8", "Toggle breakpoint on the cursor line"),
     ("Debug", "F7 / F8", "Trace into / step over (starts debugging at the first line)"),
@@ -3572,6 +3576,32 @@ mod keyboard_tests {
         for message in messages {
             let _ = ide.update(message);
         }
+    }
+
+    fn vim_keys(ide: &mut Ide, keys: &str) {
+        for ch in keys.chars() {
+            let _ = ide.update(Message::Vim(vim::Key::Char(ch)));
+        }
+    }
+
+    #[test]
+    fn vim_dot_text_objects_marks_and_visual_line_through_the_ide() {
+        let mut ide = ide("f(a, b) x\nline two\nline three");
+        ide.vim = Some(vim::Vim::default());
+        vim_keys(&mut ide, "fadi(");
+        assert_eq!(ide.content.text(), "f() x\nline two\nline three");
+        assert!(ide.modified);
+        vim_keys(&mut ide, "jma");
+        vim_keys(&mut ide, "ggfxx");
+        vim_keys(&mut ide, "j0.");
+        assert_eq!(ide.content.text(), "f() \nine two\nline three", "dot repeats x");
+        vim_keys(&mut ide, "G`a");
+        assert_eq!(ide.content.cursor().position.line, 1, "jump to the mark");
+        vim_keys(&mut ide, "ggVjd");
+        assert_eq!(ide.content.text(), "line three");
+        assert_eq!(ide.vim.as_ref().map(|v| v.status()).as_deref(), Some("NORMAL"));
+        vim_keys(&mut ide, "u");
+        assert_eq!(ide.content.text(), "f() \nine two\nline three", "one undo step for the line delete");
     }
 
     #[test]
