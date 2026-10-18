@@ -47,6 +47,26 @@ In suggested order.
 
 - Templates should build and run with F5 straight away, and pass their own tests.
 
+### 4. C# support (open-source tools only)
+- **Compiler:** the open-source .NET SDK command line (MIT licensed, Roslyn compiler), current
+  LTS release. F9 runs `dotnet build`, F5 runs `dotnet run`; errors come from the build output
+  (`file(line,col): error CS0103: ...`) into the Messages panel. A single `.cs` file without a
+  project runs with `dotnet run file.cs` (file-based apps, .NET 10+).
+- **Live errors and completion:** an open-source C# language server, `csharp-ls` (MIT, installed
+  with `dotnet tool install -g csharp-ls`).
+- **Debugger:** `netcoredbg` (Samsung, MIT), which speaks the Debug Adapter Protocol like gdb and
+  debugpy. Microsoft's own debugger (`vsdbg`) is not open source and is not used.
+- **Highlighting:** a C# lexer (keywords, strings including `@"..."` and `$"..."`, comments,
+  attributes).
+- **Setup:** add the .NET SDK, csharp-ls and netcoredbg to Options > Dependencies, the install
+  scripts and docs/INSTALL.md: Windows `winget install Microsoft.DotNet.SDK.10`, Ubuntu
+  `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed), Fedora/RHEL
+  `sudo dnf install dotnet-sdk-10.0`; netcoredbg from its GitHub releases.
+- **Templates:** add C# to File > New project (`dotnet new console`, class library + tests,
+  solution with several projects), once item 3 exists.
+- Check before starting: the exact SDK and package names for each system, and whether
+  netcoredbg covers the needed features (breakpoints, stepping, locals) on Windows and Linux.
+
 ## Known limitations
 
 - **Completion popup** sits in the bottom-right corner of the editor, not next to the cursor: the editor widget does not report the cursor's screen position.
