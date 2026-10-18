@@ -119,7 +119,7 @@ Done: syntax check (Alt+F9), terminal version `rust-ide-tui`, several open files
 and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
 Windows and Linux packages.
 
-Next, easiest first: window style (legacy / horizontal / vertical tabs),
+Next, easiest first: window style (legacy / horizontal / vertical tabs), Markdown preview,
 font size, more Vim commands, new-project templates (Simple / Low / Medium / Complex for Rust and
 Python), the rest of the terminal version, C# support.
 
