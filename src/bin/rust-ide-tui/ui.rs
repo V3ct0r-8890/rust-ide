@@ -10,11 +10,19 @@ use rust_ide::highlight::{Highlight, LineHighlighter};
 
 use crate::app::{App, MENUS, Menu, Mode, PromptKind};
 
-const BAR: Style = Style::new().fg(Color::Black).bg(Color::Gray);
-const HOTKEY: Style = Style::new().fg(Color::Red).bg(Color::Gray);
-const CHOSEN: Style = Style::new().fg(Color::Black).bg(Color::Green);
-const EDITOR: Style = Style::new().fg(Color::LightYellow).bg(Color::Blue);
-const PANEL: Style = Style::new().fg(Color::Black).bg(Color::Cyan);
+// Fixed RGB colors (the classic Turbo palette), so the contrast does not depend on
+// how the terminal theme maps the 16 ANSI colors.
+const BLUE: Color = Color::Rgb(0, 0, 170);
+const SILVER: Color = Color::Rgb(192, 192, 192);
+const TEAL: Color = Color::Rgb(0, 170, 170);
+const GREEN: Color = Color::Rgb(0, 170, 0);
+const DARK_RED: Color = Color::Rgb(140, 0, 0);
+const DARK_BLUE: Color = Color::Rgb(0, 0, 100);
+const BAR: Style = Style::new().fg(Color::Black).bg(SILVER);
+const HOTKEY: Style = Style::new().fg(DARK_RED).bg(SILVER);
+const CHOSEN: Style = Style::new().fg(Color::Black).bg(GREEN);
+const EDITOR: Style = Style::new().fg(Color::Rgb(255, 255, 85)).bg(BLUE);
+const PANEL: Style = Style::new().fg(Color::Black).bg(TEAL);
 const MESSAGES_HEIGHT: u16 = 6;
 
 /// Rows used by everything except the editor (for scrolling and paging).
@@ -82,7 +90,7 @@ fn draw_menu_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
     let mut spans = vec![Span::styled(" ", BAR)];
     for menu in MENUS {
-        let (normal, hot) = if open == Some(menu) { (CHOSEN, CHOSEN.fg(Color::Red)) } else { (BAR, HOTKEY) };
+        let (normal, hot) = if open == Some(menu) { (CHOSEN, CHOSEN.fg(DARK_RED)) } else { (BAR, HOTKEY) };
         spans.push(Span::styled(" ", normal));
         spans.extend(hotkey_spans(menu.title(), menu.title().chars().next().unwrap_or(' '), normal, hot));
         spans.push(Span::styled(" ", normal));
@@ -95,7 +103,7 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::new();
     for (index, window) in app.windows.iter().enumerate() {
         let star = if window.modified { "*" } else { "" };
-        let style = if index == app.active { PANEL } else { Style::new().fg(Color::DarkGray).bg(Color::Gray) };
+        let style = if index == app.active { PANEL } else { Style::new().fg(Color::Rgb(60, 60, 60)).bg(SILVER) };
         spans.push(Span::styled(format!(" {} {}{star} ", index + 1, window.name()), style));
         spans.push(Span::styled(" ", BAR));
     }
@@ -105,16 +113,16 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 fn color(highlight: Highlight) -> Color {
     match highlight {
         Highlight::Keyword => Color::White,
-        Highlight::Type => Color::LightGreen,
-        Highlight::Str => Color::LightCyan,
-        Highlight::Number => Color::LightMagenta,
-        Highlight::Comment => Color::Gray,
-        Highlight::Attribute => Color::LightYellow,
-        Highlight::Error => Color::LightRed,
-        Highlight::Warning => Color::Magenta,
+        Highlight::Type => Color::Rgb(85, 255, 85),
+        Highlight::Str => Color::Rgb(85, 255, 255),
+        Highlight::Number => Color::Rgb(255, 135, 255),
+        Highlight::Comment => Color::Rgb(160, 175, 255),
+        Highlight::Attribute => Color::Rgb(255, 255, 85),
+        Highlight::Error => Color::Rgb(255, 100, 100),
+        Highlight::Warning => Color::Rgb(255, 170, 0),
         Highlight::Match | Highlight::Current => Color::White,
-        Highlight::Breakpoint => Color::LightRed,
-        Highlight::ExecLine => Color::LightGreen,
+        Highlight::Breakpoint => Color::Rgb(255, 100, 100),
+        Highlight::ExecLine => Color::Rgb(85, 255, 85),
     }
 }
 
@@ -156,7 +164,7 @@ fn draw_editor(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
-    let mut lines = vec![Line::styled(" Messages   Alt+F8 next  Alt+F7 previous", PANEL.fg(Color::White))];
+    let mut lines = vec![Line::styled(" Messages   Alt+F8 next  Alt+F7 previous", PANEL.fg(DARK_BLUE))];
     let first = app.message_index.unwrap_or(0).saturating_sub(area.height as usize - 2);
     for (index, m) in app.messages.iter().enumerate().skip(first).take(area.height as usize - 1) {
         let place = match (&m.file, m.line) {
@@ -168,7 +176,7 @@ fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
         let style = if app.message_index == Some(index) {
             CHOSEN
         } else if m.level == "error" {
-            PANEL.fg(Color::Red)
+            PANEL.fg(DARK_RED)
         } else {
             PANEL
         };
@@ -185,7 +193,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let status: String = app.status.chars().take(room).collect();
     let line = Line::from(vec![
         Span::styled(keys, BAR),
-        Span::styled(format!("{status:<room$}"), BAR.fg(Color::Red)),
+        Span::styled(format!("{status:<room$}"), BAR.fg(DARK_RED)),
         Span::styled(position, BAR),
     ]);
     frame.render_widget(Paragraph::new(line).style(BAR), area);
@@ -196,9 +204,9 @@ fn dialog(title: &str) -> Block<'_> {
     Block::bordered()
         .border_type(BorderType::Double)
         .title(format!(" {title} "))
-        .style(Style::new().fg(Color::White).bg(Color::Gray))
-        .border_style(Style::new().fg(Color::White).bg(Color::Gray))
-        .title_style(Style::new().fg(Color::White).bg(Color::Gray).add_modifier(Modifier::BOLD))
+        .style(Style::new().fg(Color::Black).bg(SILVER))
+        .border_style(Style::new().fg(Color::Black).bg(SILVER))
+        .title_style(Style::new().fg(Color::Black).bg(SILVER).add_modifier(Modifier::BOLD))
 }
 
 fn centered(screen: Rect, width: u16, height: u16) -> Rect {
@@ -219,7 +227,7 @@ fn draw_dropdown(frame: &mut Frame, app: &App, menu: Menu, selected: usize, bar:
         .iter()
         .enumerate()
         .map(|(index, item)| {
-            let (normal, hot) = if index == selected { (CHOSEN, CHOSEN.fg(Color::Red)) } else { (BAR, HOTKEY) };
+            let (normal, hot) = if index == selected { (CHOSEN, CHOSEN.fg(DARK_RED)) } else { (BAR, HOTKEY) };
             let mut spans = vec![Span::styled(" ", normal)];
             spans.extend(hotkey_spans(&item.label, item.hotkey, normal, hot));
             let pad = (inner.width as usize).saturating_sub(item.label.chars().count() + item.keys.len() + 2);
@@ -318,7 +326,7 @@ fn draw_language(frame: &mut Frame, selected: usize, startup: bool) {
         .iter()
         .enumerate()
         .map(|(index, kind)| {
-            let (normal, hot) = if index == selected { (CHOSEN, CHOSEN.fg(Color::Red)) } else { (BAR, HOTKEY) };
+            let (normal, hot) = if index == selected { (CHOSEN, CHOSEN.fg(DARK_RED)) } else { (BAR, HOTKEY) };
             let mut spans = vec![Span::styled(" ", normal)];
             spans.extend(hotkey_spans(kind.label, kind.hotkey, normal, hot));
             let pad = (list.width as usize).saturating_sub(kind.label.chars().count() + kind.ext.len() + 3);
@@ -327,7 +335,7 @@ fn draw_language(frame: &mut Frame, selected: usize, startup: bool) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines).style(BAR), list);
-    frame.render_widget(Paragraph::new(format!(" {}", filetype::NOTE)).style(BAR.fg(Color::DarkGray)).wrap(ratatui::widgets::Wrap { trim: true }), note);
+    frame.render_widget(Paragraph::new(format!(" {}", filetype::NOTE)).style(BAR.fg(Color::Rgb(60, 60, 60))).wrap(ratatui::widgets::Wrap { trim: true }), note);
     let escape = if startup { "Esc: plain Rust window" } else { "Esc: cancel" };
     frame.render_widget(Paragraph::new(format!(" Up/Down  Enter OK  R P T M / 1-4  {escape}")).style(BAR), hint);
 }
@@ -343,7 +351,7 @@ fn draw_help(frame: &mut Frame, scroll: usize) {
         .skip(scroll.min(SHORTCUTS.len().saturating_sub(1)))
         .map(|(keys, action)| {
             Line::from(vec![
-                Span::styled(format!(" {keys:<20}"), PANEL.fg(Color::White)),
+                Span::styled(format!(" {keys:<20}"), PANEL.fg(DARK_BLUE)),
                 Span::styled(action.to_string(), PANEL),
             ])
         })
