@@ -13,7 +13,7 @@ use std::process::Command;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::cursor::SetCursorStyle;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use rust_ide::runner::{self, RunTarget};
@@ -38,21 +38,26 @@ fn main() -> io::Result<()> {
     }
     let files: Vec<PathBuf> = args.iter().filter(|a| !a.starts_with("--")).map(PathBuf::from).collect();
 
+    let mouse = !args.iter().any(|a| a == "--no-mouse");
     let mut terminal = ratatui::init();
     // Turbo Pascal's block cursor.
     let _ = execute!(io::stdout(), SetCursorStyle::SteadyBlock);
+    if mouse {
+        let _ = execute!(io::stdout(), EnableMouseCapture);
+    }
     let mut app = App::new(&files);
+    app.check_before = rust_ide::platform::read_setting("check_before").as_deref() == Some("true");
     // Started without a file: ask which language to use.
     if files.is_empty() {
         app.ask_language(true);
     }
-    let result = run(&mut terminal, app);
-    let _ = execute!(io::stdout(), SetCursorStyle::DefaultUserShape);
+    let result = run(&mut terminal, app, mouse);
+    let _ = execute!(io::stdout(), SetCursorStyle::DefaultUserShape, DisableMouseCapture);
     ratatui::restore();
     result
 }
 
-fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
+fn run(terminal: &mut DefaultTerminal, mut app: App, mouse: bool) -> io::Result<()> {
     loop {
         let size = terminal.size()?;
         let area = ui::editor_area(&app, ratatui::layout::Rect::new(0, 0, size.width, size.height));
@@ -67,12 +72,12 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
                 .open(log)
                 .and_then(|mut f| writeln!(f, "{raw:?}"));
         }
-        let Event::Key(key) = raw else { continue };
-        // Windows reports key releases too.
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-        let mut effect = app.handle(key);
+        let mut effect = match raw {
+            // Windows reports key releases too.
+            Event::Key(key) if key.kind == KeyEventKind::Press => app.handle(key),
+            Event::Mouse(event) => app.mouse(event, ratatui::layout::Rect::new(0, 0, size.width, size.height)),
+            _ => continue,
+        };
         loop {
             effect = match effect {
                 Effect::None => break,
@@ -86,16 +91,15 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
                 Effect::Check { path } => {
                     terminal.draw(|frame| ui::draw(frame, &app))?;
                     let result = runner::check(&path);
-                    app.check_finished(result);
-                    Effect::None
+                    app.check_finished(result)
                 }
                 Effect::Run(target) => {
-                    let status = user_screen(terminal, Some(&target))?;
+                    let status = user_screen(terminal, Some(&target), mouse)?;
                     app.status = status;
                     Effect::None
                 }
                 Effect::UserScreen => {
-                    user_screen(terminal, None)?;
+                    user_screen(terminal, None, mouse)?;
                     Effect::None
                 }
             };
@@ -105,9 +109,9 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
 
 /// Leaves the IDE screen to run a program (or just show the terminal's own
 /// screen), then waits for a key and comes back.
-fn user_screen(terminal: &mut DefaultTerminal, target: Option<&RunTarget>) -> io::Result<String> {
+fn user_screen(terminal: &mut DefaultTerminal, target: Option<&RunTarget>, mouse: bool) -> io::Result<String> {
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen, SetCursorStyle::DefaultUserShape)?;
+    execute!(io::stdout(), LeaveAlternateScreen, SetCursorStyle::DefaultUserShape, DisableMouseCapture)?;
 
     let mut status = String::from("User screen");
     if let Some(target) = target {
@@ -144,6 +148,9 @@ fn user_screen(terminal: &mut DefaultTerminal, target: Option<&RunTarget>) -> io
 
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, SetCursorStyle::SteadyBlock)?;
+    if mouse {
+        execute!(io::stdout(), EnableMouseCapture)?;
+    }
     terminal.clear()?;
     Ok(status)
 }

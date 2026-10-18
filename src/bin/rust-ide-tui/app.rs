@@ -4,7 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
 use rust_ide::runner::{BuildResult, Diagnostic, RunTarget};
 use rust_ide::filetype;
 use rust_ide::search;
@@ -19,11 +20,13 @@ pub enum Menu {
     Search,
     Run,
     Compile,
+    Options,
     Window,
     Help,
 }
 
-pub const MENUS: [Menu; 7] = [Menu::File, Menu::Edit, Menu::Search, Menu::Run, Menu::Compile, Menu::Window, Menu::Help];
+pub const MENUS: [Menu; 8] =
+    [Menu::File, Menu::Edit, Menu::Search, Menu::Run, Menu::Compile, Menu::Options, Menu::Window, Menu::Help];
 
 impl Menu {
     pub fn title(self) -> &'static str {
@@ -33,6 +36,7 @@ impl Menu {
             Menu::Search => "Search",
             Menu::Run => "Run",
             Menu::Compile => "Compile",
+            Menu::Options => "Options",
             Menu::Window => "Window",
             Menu::Help => "Help",
         }
@@ -60,7 +64,9 @@ pub enum Action {
     Redo,
     Find,
     FindNext,
+    Replace,
     GoToLine,
+    ToggleCheckBefore,
     Run,
     UserScreen,
     Compile,
@@ -105,6 +111,10 @@ pub enum PromptKind {
     SaveAs,
     Find,
     GoTo,
+    /// Replace, step 1: the text to look for.
+    ReplaceFind,
+    /// Replace, step 2: what to put instead.
+    ReplaceWith,
 }
 
 pub enum Mode {
@@ -185,6 +195,12 @@ pub struct App {
     pub messages: Vec<Diagnostic>,
     pub message_index: Option<usize>,
     pub last_query: String,
+    /// The text being replaced, between the two Replace prompts.
+    replace_query: String,
+    /// Options > Check before run: F5 / F9 look for errors first.
+    pub check_before: bool,
+    /// After a check that finds no errors: build (and run when true).
+    then_build: Option<bool>,
     /// A pending "press again to discard" for this action.
     confirm: Option<Action>,
     /// Program shown on the user screen (for its title).
@@ -201,6 +217,9 @@ impl App {
             messages: Vec::new(),
             message_index: None,
             last_query: String::new(),
+            replace_query: String::new(),
+            check_before: false,
+            then_build: None,
             confirm: None,
             last_run: None,
         };
@@ -238,6 +257,7 @@ impl App {
             Menu::Edit => vec![item("Undo", 'u', "Ctrl+Z", Action::Undo), item("Redo", 'r', "Ctrl+Y", Action::Redo)],
             Menu::Search => vec![
                 item("Find...", 'f', "Ctrl+F", Action::Find),
+                item("Replace...", 'r', "Ctrl+H", Action::Replace),
                 item("Search again", 's', "Ctrl+L", Action::FindNext),
                 item("Go to line number...", 'g', "Ctrl+G", Action::GoToLine),
             ],
@@ -248,6 +268,12 @@ impl App {
                 item("Next message", 'n', "Alt+F8", Action::NextMessage),
                 item("Previous message", 'p', "Alt+F7", Action::PrevMessage),
             ],
+            Menu::Options => vec![item(
+                if self.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
+                'c',
+                "",
+                Action::ToggleCheckBefore,
+            )],
             Menu::Window => {
                 let mut items = vec![
                     item("Next", 'n', "F6", Action::NextWindow),
@@ -454,6 +480,12 @@ impl App {
             }
             Action::Find => self.mode = Mode::Prompt { kind: PromptKind::Find, input: self.last_query.clone() },
             Action::FindNext => self.find_next(),
+            Action::Replace => self.mode = Mode::Prompt { kind: PromptKind::ReplaceFind, input: self.last_query.clone() },
+            Action::ToggleCheckBefore => {
+                self.check_before = !self.check_before;
+                let _ = rust_ide::platform::write_setting("check_before", if self.check_before { "true" } else { "false" });
+                self.status = format!("Check before run {}", if self.check_before { "on" } else { "off" });
+            }
             Action::GoToLine => self.mode = Mode::Prompt { kind: PromptKind::GoTo, input: String::new() },
             Action::Run | Action::Compile => {
                 let run = action == Action::Run;
@@ -465,8 +497,14 @@ impl App {
                 if self.buffer().modified {
                     return Effect::None; // saving failed
                 }
+                let path = self.buffer().path.clone().unwrap_or_default();
+                if self.check_before {
+                    self.then_build = Some(run);
+                    self.status = "Checking...".into();
+                    return Effect::Check { path };
+                }
                 self.status = "Compiling...".into();
-                return Effect::Build { path: self.buffer().path.clone().unwrap_or_default(), run };
+                return Effect::Build { path, run };
             }
             Action::SyntaxCheck => {
                 if self.buffer().path.is_none() {
@@ -477,6 +515,7 @@ impl App {
                 if self.buffer().modified {
                     return Effect::None; // saving failed
                 }
+                self.then_build = None;
                 self.status = "Checking...".into();
                 return Effect::Check { path: self.buffer().path.clone().unwrap_or_default() };
             }
@@ -515,6 +554,24 @@ impl App {
             PromptKind::Find => {
                 self.last_query = input.to_string();
                 self.find_next();
+            }
+            PromptKind::ReplaceFind => {
+                if input.is_empty() {
+                    self.status = "Nothing to search for".into();
+                } else {
+                    self.last_query = input.to_string();
+                    self.replace_query = input.to_string();
+                    self.mode = Mode::Prompt { kind: PromptKind::ReplaceWith, input: String::new() };
+                }
+            }
+            PromptKind::ReplaceWith => {
+                let query = std::mem::take(&mut self.replace_query);
+                let count = self.buffer_mut().replace_all(&query, input);
+                self.status = if count == 0 {
+                    format!("Search string not found: {query}")
+                } else {
+                    format!("Replaced {count} occurrence(s) (Ctrl+Z undoes)")
+                };
             }
             PromptKind::GoTo => match input.trim().parse::<usize>() {
                 Ok(line) if line >= 1 => self.buffer_mut().go_to(line - 1, 0),
@@ -757,7 +814,8 @@ impl App {
     }
 
     /// Called by the main loop when a syntax check finishes.
-    pub fn check_finished(&mut self, result: BuildResult) {
+    pub fn check_finished(&mut self, result: BuildResult) -> Effect {
+        let then = self.then_build.take();
         self.messages = result.diagnostics;
         self.message_index = None;
         let errors = self.messages.iter().filter(|d| d.level == "error").count();
@@ -770,6 +828,60 @@ impl App {
         } else {
             self.status = format!("No syntax errors, {warnings} warning(s)");
         }
+        match then {
+            Some(run) if result.success => {
+                let path = self.buffer().path.clone().unwrap_or_default();
+                self.status.push_str("; compiling...");
+                Effect::Build { path, run }
+            }
+            _ => Effect::None,
+        }
+    }
+
+    // ----- Mouse -----
+
+    /// A mouse event on a screen of the given size: menus, tabs and the editor.
+    pub fn mouse(&mut self, event: MouseEvent, screen: Rect) -> Effect {
+        let editor = crate::ui::editor_area(self, screen);
+        let (x, y) = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if y == screen.y {
+                    self.mode = match crate::ui::menu_at(x) {
+                        Some(menu) if !matches!(self.mode, Mode::Menu { menu: open, .. } if open == menu) => {
+                            Mode::Menu { menu, item: 0 }
+                        }
+                        _ => Mode::Edit,
+                    };
+                    return Effect::None;
+                }
+                if let Mode::Menu { menu, .. } = self.mode {
+                    self.mode = Mode::Edit;
+                    if let Some(index) = crate::ui::dropdown_item_at(self, menu, screen, x, y) {
+                        let action = self.menu_items(menu)[index].action.clone();
+                        return self.act(action);
+                    }
+                    return Effect::None;
+                }
+                if !matches!(self.mode, Mode::Edit) {
+                    return Effect::None;
+                }
+                if self.windows.len() > 1 && y == screen.y + 1 {
+                    if let Some(index) = crate::ui::tab_at(self, x) {
+                        self.select(index);
+                    }
+                } else if editor.contains(Position::new(x, y)) {
+                    let (row, col) = (y - editor.y, x - editor.x);
+                    let b = self.buffer_mut();
+                    let (row, col) = (b.scroll + row as usize, b.hscroll + col as usize);
+                    b.go_to(row, col);
+                }
+            }
+            MouseEventKind::ScrollUp if matches!(self.mode, Mode::Edit) => self.buffer_mut().vertical(-3),
+            MouseEventKind::ScrollDown if matches!(self.mode, Mode::Edit) => self.buffer_mut().vertical(3),
+            _ => {}
+        }
+        Effect::None
     }
 
     fn step_message(&mut self, forward: bool) {
@@ -822,6 +934,8 @@ fn global_key(key: &KeyEvent) -> Option<Action> {
             'y' => Action::Redo,
             'f' => Action::Find,
             'l' => Action::FindNext,
+            // Ctrl+H is Backspace in many terminals, so Ctrl+R also replaces.
+            'h' | 'r' => Action::Replace,
             'g' => Action::GoToLine,
             'q' => Action::Exit,
             _ => return None,
@@ -893,6 +1007,7 @@ mod tests {
         let mut app = App::new(&[]);
         app.handle(with(KeyCode::Char('s'), KeyModifiers::ALT));
         assert!(matches!(app.mode, Mode::Menu { menu: Menu::Search, item: 0 }));
+        app.handle(key(KeyCode::Down));
         app.handle(key(KeyCode::Down));
         app.handle(key(KeyCode::Down));
         app.handle(key(KeyCode::Enter));
@@ -1185,5 +1300,105 @@ mod tests {
         assert!(d.error.is_empty(), "typing clears the message");
         app.handle(key(KeyCode::Esc));
         assert!(matches!(app.mode, Mode::Edit));
+    }
+
+    #[test]
+    fn replace_all_asks_twice_and_undoes() {
+        let mut app = App::new(&[]);
+        typed(&mut app, "Foo bar foo
+FOO");
+        app.handle(with(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert!(matches!(app.mode, Mode::Prompt { kind: PromptKind::ReplaceFind, .. }));
+        typed(&mut app, "foo
+");
+        assert!(matches!(app.mode, Mode::Prompt { kind: PromptKind::ReplaceWith, .. }));
+        typed(&mut app, "x
+");
+        assert!(matches!(app.mode, Mode::Edit));
+        assert_eq!(app.buffer().text(), "x bar x
+x", "case is ignored, like Find");
+        assert!(app.status.contains("Replaced 3"));
+        app.handle(with(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(app.buffer().text(), "Foo bar foo
+FOO", "one undo restores everything");
+        // Nothing found.
+        app.handle(with(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        typed(&mut app, "zzz
+
+");
+        assert!(app.status.contains("not found"));
+        // The Search menu lists it.
+        assert!(app.menu_items(Menu::Search).iter().any(|i| i.action == Action::Replace));
+    }
+
+    #[test]
+    fn check_before_run_builds_only_after_a_clean_check() {
+        let _settings = isolate_settings();
+        let files = temp_files(&["checked.rs"]);
+        let mut app = App::new(&files);
+        assert!(!app.check_before);
+        assert!(matches!(app.act(Action::Run), Effect::Build { run: true, .. }));
+        app.act(Action::ToggleCheckBefore);
+        assert!(app.check_before);
+        assert_eq!(rust_ide::platform::read_setting("check_before").as_deref(), Some("true"));
+        assert!(matches!(app.act(Action::Run), Effect::Check { .. }));
+        let bad = Diagnostic { level: "error".into(), message: "oops".into(), file: None, line: 1, column: 1 };
+        let failed = BuildResult { success: false, diagnostics: vec![bad], target: None };
+        assert_eq!(app.check_finished(failed), Effect::None, "errors stop the run");
+        assert!(matches!(app.act(Action::Compile), Effect::Check { .. }));
+        let ok = BuildResult { success: true, diagnostics: vec![], target: None };
+        assert!(matches!(app.check_finished(ok), Effect::Build { run: false, .. }), "a clean check goes on to compile");
+        // A plain syntax check never builds.
+        assert!(matches!(app.act(Action::SyntaxCheck), Effect::Check { .. }));
+        let ok = BuildResult { success: true, diagnostics: vec![], target: None };
+        assert_eq!(app.check_finished(ok), Effect::None);
+        app.act(Action::ToggleCheckBefore);
+        assert!(!app.check_before);
+        assert!(app.menu_items(Menu::Options)[0].label.contains("[ ]"));
+    }
+
+    fn click(x: u16, y: u16) -> MouseEvent {
+        MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: x, row: y, modifiers: KeyModifiers::NONE }
+    }
+
+    #[test]
+    fn the_mouse_places_the_cursor_and_drives_menus_and_tabs() {
+        let screen = Rect::new(0, 0, 80, 24);
+        let mut app = App::new(&[]);
+        typed(&mut app, "one
+two words
+three");
+        // Row 0 of the screen is the menu bar, so the editor starts on row 1.
+        app.mouse(click(4, 2), screen);
+        assert_eq!((app.buffer().row, app.buffer().char_col()), (1, 4));
+        app.mouse(click(70, 1), screen);
+        assert_eq!((app.buffer().row, app.buffer().char_col()), (0, 3), "past the end of a line");
+        // The File title opens its menu; a second click closes it.
+        app.mouse(click(2, 0), screen);
+        assert!(matches!(app.mode, Mode::Menu { menu: Menu::File, .. }));
+        app.mouse(click(2, 0), screen);
+        assert!(matches!(app.mode, Mode::Edit));
+        // Open the Options menu by clicking its title, then click its item.
+        let x = MENUS.iter().take_while(|&&m| m != Menu::Options).map(|m| m.title().len() as u16 + 3).sum::<u16>() + 2;
+        app.mouse(click(x, 0), screen);
+        assert!(matches!(app.mode, Mode::Menu { menu: Menu::Options, .. }));
+        let _settings = isolate_settings();
+        app.mouse(click(x + 2, 2), screen);
+        assert!(matches!(app.mode, Mode::Edit));
+        assert!(app.check_before, "the clicked menu item ran");
+        // Clicking outside an open menu just closes it.
+        app.mouse(click(2, 0), screen);
+        app.mouse(click(60, 15), screen);
+        assert!(matches!(app.mode, Mode::Edit));
+        // Tabs: with two windows the second row is the tab row.
+        app.act(Action::New);
+        app.handle(key(KeyCode::Char('r')));
+        assert_eq!(app.windows.len(), 2);
+        assert_eq!(app.active, 1);
+        app.mouse(click(2, 1), screen);
+        assert_eq!(app.active, 0, "clicking the first tab selects it");
+        // The wheel moves the cursor.
+        app.mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: 5, row: 5, modifiers: KeyModifiers::NONE }, screen);
+        assert_eq!(app.buffer().row, 2);
     }
 }

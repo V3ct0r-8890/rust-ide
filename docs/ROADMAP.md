@@ -16,6 +16,7 @@ Last updated: 2026-10-20. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 | Window style | Options > Window style (window version): **Legacy windows** (Turbo Pascal frame line with the name and window number), **Horizontal tabs** (default) or **Vertical tabs** (list on the left); same keys in every style; the choice is remembered |
 | New files | Started without a file, the IDE (both versions) asks which language to use: Rust, Python, or Text / Markdown for anything else; File > New asks too. The last choice is remembered and preselected; the type sets highlighting, the `NONAME.xx` name and the Save As default; `.txt` and `.md` open as plain files |
 | New project | **File > New project...** (Alt+F P, both versions): Rust or Python, size Simple / Low / Medium / Complex, a name and a folder; writes the project and opens its main file. All 8 templates are built, run and tested by `cargo test templates:: -- --ignored` (run in CI) |
+| Terminal: Replace, mouse, Options | `rust-ide-tui` (0.2.12): Replace all (Ctrl+H / Ctrl+R, one undo), mouse (menus, tabs, cursor, wheel; `--no-mouse` turns it off), Options > Check before run |
 | Settings dialog | Window version: **Options > Settings...** (Alt+O E) - preview place, window style, Vim mode, check before run, font size, dependencies; keyboard (Up/Down, Left/Right, Enter, letters, Esc) and mouse; changes apply and are remembered at once. The terminal version has no Options menu yet (backlog item 1) |
 | Font size | Window version: **Ctrl+=** larger, **Ctrl+-** smaller, **Ctrl+0** default (also Options menu, Alt+O B / S / R); 10 to 32 points, remembered (`font_size` in the settings file). Applies to the editor (with the block cursor), the Markdown preview and the user screen; menus and panels keep their size. The terminal version uses the terminal's own zoom |
 | Syntax check | Compile > Syntax check, **Alt+F9** (GUI and terminal version): finds errors without building or running - `cargo check` for projects, `rustc --emit=metadata` for single Rust files, the syntax parse for Python; errors go to the Messages panel and the cursor jumps to the first. Options > Check before run (GUI) makes F9 / F5 run it first and stop on errors |
@@ -39,7 +40,7 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 
 ### 1. Terminal version: the rest - L
 Suggested sub-steps, easiest first:
-1. Replace, mouse support (click to place the cursor, menus) and an Options menu / Settings dialog like the window version's (Check before run, window style, Vim, ...).
+1. ~~Replace, mouse support and an Options menu~~ - done in 0.2.12 (Ctrl+H / Ctrl+R replace all, click menus / tabs / text, Options > Check before run). Still to do: a Settings dialog like the window version's, once there are more settings to put in it (Vim, ...).
 2. Vim mode (reuse `src/vim.rs`).
 3. Live errors and completion (language servers). Needs the terminal loop to wait for events
    from the servers as well as keys, which is the main rework.

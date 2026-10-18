@@ -69,6 +69,38 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
+/// The menu whose title is at column `x` of the menu bar.
+pub fn menu_at(x: u16) -> Option<Menu> {
+    MENUS.iter().copied().find(|&m| x >= title_x(m) - 1 && x < title_x(m) + m.title().len() as u16 + 1)
+}
+
+/// The window whose tab is at column `x` of the tab row.
+pub fn tab_at(app: &App, x: u16) -> Option<usize> {
+    let mut start = 0u16;
+    for (index, window) in app.windows.iter().enumerate() {
+        let star = u16::from(window.modified);
+        let width = format!(" {} ", index + 1).len() as u16 + window.name().chars().count() as u16 + star + 1;
+        if x >= start && x < start + width {
+            return Some(index);
+        }
+        start += width + 1;
+    }
+    None
+}
+
+fn dropdown_area(app: &App, menu: Menu, screen: Rect) -> Rect {
+    let items = app.menu_items(menu);
+    let width = items.iter().map(|i| i.label.chars().count() + i.keys.len() + 6).max().unwrap_or(10) as u16;
+    Rect::new(screen.x + title_x(menu), screen.y + 1, width, items.len() as u16 + 2).intersection(screen)
+}
+
+/// The item of an open menu under the screen position, if any.
+pub fn dropdown_item_at(app: &App, menu: Menu, screen: Rect, x: u16, y: u16) -> Option<usize> {
+    let area = dropdown_area(app, menu, screen);
+    let inside = x > area.x && x + 1 < area.right() && y > area.y && y + 1 < area.bottom();
+    inside.then(|| (y - area.y - 1) as usize).filter(|&i| i < app.menu_items(menu).len())
+}
+
 fn title_x(menu: Menu) -> u16 {
     MENUS.iter().take_while(|&&m| m != menu).map(|m| m.title().len() as u16 + 3).sum::<u16>() + 1
 }
@@ -226,8 +258,8 @@ fn centered(screen: Rect, width: u16, height: u16) -> Rect {
 
 fn draw_dropdown(frame: &mut Frame, app: &App, menu: Menu, selected: usize, bar: Rect) {
     let items = app.menu_items(menu);
-    let width = items.iter().map(|i| i.label.chars().count() + i.keys.len() + 6).max().unwrap_or(10) as u16;
-    let area = Rect::new(bar.x + title_x(menu), bar.y + 1, width, items.len() as u16 + 2).intersection(frame.area());
+    let area = dropdown_area(app, menu, frame.area());
+    let _ = bar;
     frame.render_widget(Clear, area);
     let block = Block::bordered().style(BAR).border_style(BAR);
     let inner = block.inner(area);
@@ -252,6 +284,8 @@ fn draw_prompt(frame: &mut Frame, kind: PromptKind, input: &str) {
         PromptKind::SaveAs => "Save file as",
         PromptKind::Find => "Find",
         PromptKind::GoTo => "Go to line number",
+        PromptKind::ReplaceFind => "Replace: text to find",
+        PromptKind::ReplaceWith => "Replace with",
     };
     let area = centered(frame.area(), 60, 5);
     frame.render_widget(Clear, area);
@@ -310,7 +344,10 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+Left/Right", "Previous / next word"),
     ("Ctrl+Home/End", "Start / end of the file"),
     ("Ctrl+F", "Find"),
+    ("Ctrl+H / Ctrl+R", "Replace all (asks for the text, then the replacement; Ctrl+Z undoes)"),
     ("Ctrl+L", "Search again"),
+    ("Options > Check before run", "F9 / F5 look for errors first and stop if there are any (remembered)"),
+    ("Mouse", "Click a menu, a menu item, a tab or a place in the text; the wheel moves the cursor (start with --no-mouse to select text with the mouse)"),
     ("Ctrl+G", "Go to line number"),
     ("F9", "Compile the current file"),
     ("Alt+F9", "Syntax check: find errors without building or running"),

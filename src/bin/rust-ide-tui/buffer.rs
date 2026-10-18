@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use rust_ide::filetype;
 use rust_ide::highlight::Lang;
+use rust_ide::search;
 
 const TAB: usize = 4;
 const UNDO_LIMIT: usize = 200;
@@ -320,6 +321,27 @@ impl Buffer {
         self.want = None;
         self.row = row.min(self.lines.len() - 1);
         self.col = Self::byte_at(self.line(), char_col);
+    }
+
+    /// Replaces every match of `query` (ignoring case) as one undoable step;
+    /// returns how many were replaced.
+    pub fn replace_all(&mut self, query: &str, with: &str) -> usize {
+        let text = self.text();
+        let (new_text, count) = search::replace_all(&text, query, with, false);
+        if count == 0 {
+            return 0;
+        }
+        let offset = self.offset().min(new_text.len());
+        self.end_group();
+        self.before_edit();
+        self.lines = new_text.split('\n').map(str::to_string).collect();
+        self.end_group();
+        self.go_to_offset(offset);
+        // The offset may fall inside a character after the text changed.
+        while !self.lines[self.row].is_char_boundary(self.col) {
+            self.col -= 1;
+        }
+        count
     }
 
     /// Byte offset of the cursor in `text()`.

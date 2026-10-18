@@ -108,12 +108,16 @@ F1 help, several windows (F6, Alt+1-9), Ctrl+F / Ctrl+L / Ctrl+G, F9 compile wit
 Messages panel (Alt+F8 / Alt+F7), and **F5 runs the program right in the terminal**,
 like Turbo Pascal's user screen (Alt+F5 shows it again).
 
+- **Replace** (Ctrl+H, or Ctrl+R because many terminals send Ctrl+H as Backspace; Search > Replace...): asks for the text and then the replacement, replaces every match (case ignored, like Find) and Ctrl+Z undoes it in one step.
+- **Options > Check before run**: F9 / F5 first look for errors and stop if there are any (shared setting with the window version).
+- **Mouse**: click a menu title, a menu item, a window tab or a place in the text; the wheel moves the cursor. Start with `--no-mouse` if you would rather select text with the terminal's own mouse selection.
+
 ```
 rust-ide-tui hello.rs main.py
 ```
 
 Not in the terminal version yet: live errors and completion (language servers), the
-debugger, Replace, and Vim mode. Set `NO_COLOR` and it shows no colors, as terminal
+debugger, Vim mode and a Settings dialog (the Options menu has only Check before run so far). Set `NO_COLOR` and it shows no colors, as terminal
 programs should.
 
 ## Vim mode
