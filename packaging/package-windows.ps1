@@ -27,3 +27,9 @@ $zip = "dist\$name.zip"
 Remove-Item $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path "$stage\*" -DestinationPath $zip
 Write-Host "Created $zip"
+
+# Loose copies with the release number in the file names, easy to find and run.
+Copy-Item "$target\rust-ide.exe" "dist\rust-ide-$version.exe"
+Copy-Item "$target\rust-ide-tui.exe" "dist\rust-ide-tui-$version.exe"
+Write-Host "Created dist\rust-ide-$version.exe and dist\rust-ide-tui-$version.exe"
+

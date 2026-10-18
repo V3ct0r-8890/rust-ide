@@ -28,33 +28,14 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 
 | # | Item | Effort |
 |---|---|---|
-| 1 | Numbered build executables (xx.yy.zzz) | S-M |
-| 2 | Window style: legacy / horizontal tabs / vertical tabs | S-M |
-| 3 | Font size setting | M |
-| 4 | Vim mode, more commands | M |
-| 5 | New project from templates | M |
-| 6 | Terminal version: the rest | L |
-| 7 | C# support | L |
+| 1 | Window style: legacy / horizontal tabs / vertical tabs | S-M |
+| 2 | Font size setting | M |
+| 3 | Vim mode, more commands | M |
+| 4 | New project from templates | M |
+| 5 | Terminal version: the rest | L |
+| 6 | C# support | L |
 
-### 1. Numbered build executables (xx.yy.zzz) - S-M
-- After every build, the ready-to-run executables are created for each system and kept: Windows
-  (`rust-ide.exe` + `rust-ide-tui.exe` in a zip) and Linux (both programs in a tar.gz), named
-  with a running build number, for example `rust-ide-00.02.014-windows-x86_64.zip`.
-- **Reading of `xx.yy.zzz` (to be confirmed):** `xx.yy` = major.minor version from `Cargo.toml`
-  (0.2 -> `00.02`), `zzz` = the running build number, counting up with every build and never
-  repeating (GitHub's workflow run number), padded to three digits (`014`).
-- **"Each build" (to be confirmed):** every CI build of the IDE: each push to `main` produces the
-  numbered packages as downloadable build artifacts (tagged releases still publish them on the
-  Releases page). Local packaging (`packaging/package-*.ps1|sh`) takes the next number from a
-  counter file kept next to the scripts (not committed).
-- **Constraint:** Cargo only accepts semantic versions without leading zeros, so `00.02.014`
-  cannot be the package version itself. `Cargo.toml` keeps `0.2.0`; the build number is passed
-  in at build time, shown by `--version` (`rust-ide 0.2.0 (build 014)`) and in the packages'
-  file names.
-- Open questions: does `zzz` restart at 001 when the minor version changes? Is the other reading
-  meant: the IDE keeps a numbered copy of the executable your own project produces on each F9?
-
-### 2. Window style setting (GUI) - S-M
+### 1. Window style setting (GUI) - S-M
 - **Options > Window style** chooses how open files (buffer windows) are shown and selected:
   - **Legacy (Turbo Pascal):** no tab strip. Windows are picked from the Window menu list
     (Alt+0), with F6 / Shift+F6 and Alt+1-9, and the active window's number and name are shown
@@ -66,7 +47,7 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
   (`window_style=legacy|horizontal|vertical`).
 - Later: a matching choice in the terminal version (legacy or horizontal tabs).
 
-### 3. Font size setting - M
+### 2. Font size setting - M
 - **Options > Font size...** in the GUI, plus keys: Ctrl+= larger, Ctrl+- smaller, Ctrl+0 back
   to the default. Applies to the editor, menus, panels and dialogs together.
 - Remembered between sessions in the settings file (`font_size=16`), with a sensible range
@@ -76,12 +57,12 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 - The terminal version uses the terminal's own font; its Options menu can say so and point to
   the terminal's zoom (usually Ctrl+= / Ctrl+-).
 
-### 4. Vim mode, more commands - M
+### 3. Vim mode, more commands - M
 - Line-wise Visual mode (`V`), repeat (`.`), text objects (`ciw`, `di(`), `f`/`t` motions, marks,
   block cursor.
 - Pure logic in `src/vim.rs`, so it is tested with unit tests like the existing commands.
 
-### 5. New project from templates - M
+### 4. New project from templates - M
 - **File > New project...** dialog: choose the language (Rust or Python), a size
   (Simple, Low, Medium or Complex), a project name and a folder. The IDE generates a general
   starting template and opens its main file.
@@ -98,7 +79,7 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 - Templates should build and run with F5 straight away, and pass their own tests; all eight
   (4 sizes x 2 languages) are checked by automated tests and in CI.
 
-### 6. Terminal version: the rest - L
+### 5. Terminal version: the rest - L
 Suggested sub-steps, easiest first:
 1. Replace, mouse support (click to place the cursor, menus) and an Options menu (Check before run, ...).
 2. Vim mode (reuse `src/vim.rs`).
@@ -106,7 +87,7 @@ Suggested sub-steps, easiest first:
    from the servers as well as keys, which is the main rework.
 4. The debugger (breakpoints, F7/F8, watches panel).
 
-### 7. C# support (open-source tools only) - L
+### 6. C# support (open-source tools only) - L
 - **Compiler:** the open-source .NET SDK command line (MIT licensed, Roslyn compiler), current
   LTS release. F9 runs `dotnet build`, F5 runs `dotnet run`; errors come from the build output
   (`file(line,col): error CS0103: ...`) into the Messages panel. A single `.cs` file without a
@@ -122,7 +103,7 @@ Suggested sub-steps, easiest first:
   `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed), Fedora/RHEL
   `sudo dnf install dotnet-sdk-10.0`; netcoredbg from its GitHub releases.
 - **Templates:** add C# to File > New project (`dotnet new console`, class library + tests,
-  solution with several projects), once item 5 exists.
+  solution with several projects), once item 4 exists.
 - Why last: it adds a whole new toolchain on three systems, and netcoredbg is unproven here.
   Check before starting: the exact SDK and package names for each system, and whether
   netcoredbg covers the needed features (breakpoints, stepping, locals) on Windows and Linux.

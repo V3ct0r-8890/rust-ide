@@ -79,5 +79,13 @@ A Turbo Pascal-style IDE for Rust and Python, with two front ends over one libra
 - Repo: https://github.com/V3ct0r-8890/rust-ide (public). Work on `main`; commit and push when
   a feature is done and tested.
 - Keep `README.md` (keys, features), `docs/INSTALL.md` and `docs/ROADMAP.md` current with changes.
+- **Handing work over for the user to verify (standing rule from the owner):** build the
+  executables first and leave them in the project folder with the release number in the file
+  names: `powershell -File packaging\package-windows.ps1` writes `dist\rust-ide-<version>.exe`,
+  `dist\rust-ide-tui-<version>.exe` and the zip. Releases are plain `x.y.z`. Bump the patch number
+  in `Cargo.toml` (and let `Cargo.lock` follow) for every build handed over, so the owner can tell
+  builds apart; the owner picks bigger bumps and releases. State the exact path and version, and
+  what to try by hand, in the hand-over message. Only Windows executables are built locally;
+  Linux packages come from tagging a release (CI), so say that and offer it.
 - Shell scripts keep LF endings (`.gitattributes`) and the executable bit
   (`git update-index --chmod=+x`).
