@@ -503,6 +503,8 @@ struct Ide {
     untitled_ext: Option<&'static str>,
     language: Option<LanguageDialog>,
     window_style: WindowStyle,
+    /// Settings changes are written to the settings file (true in the real program).
+    persist_settings: bool,
     /// Markdown preview next to the editor (shown for Markdown windows only).
     preview: bool,
     preview_content: markdown::Content,
@@ -666,6 +668,7 @@ impl Ide {
     /// the external tools in the background.
     fn new() -> (Self, Task<Message>) {
         let mut ide = Self::default();
+        ide.persist_settings = true;
         let os = Os::detect();
         ide.os = Some(os);
         ide.check_before = platform::read_setting("check_before").as_deref() == Some("true");
@@ -707,6 +710,18 @@ impl Ide {
         };
         // Like Turbo Pascal, start with the cursor in the editor, ready to type.
         (ide, Task::batch([check, iced::widget::operation::focus(EDITOR)]))
+    }
+
+    /// Saves a setting for next time, but only in the real program: `Ide::default()`
+    /// (used by the tests) never touches a settings file unless a test turns
+    /// `persist_settings` on.
+    fn save_setting(&mut self, key: &str, value: &str) {
+        if !self.persist_settings {
+            return;
+        }
+        if let Err(e) = platform::write_setting(key, value) {
+            self.status = format!("Cannot save settings: {e}");
+        }
     }
 
     fn toggles(&self) -> Toggles {
@@ -832,9 +847,7 @@ impl Ide {
             Message::WindowStyle(style) => {
                 self.window_style = style;
                 self.status = format!("Window style: {}", style.label().to_lowercase());
-                if let Err(e) = platform::write_setting("window_style", style.setting()) {
-                    self.status = format!("Cannot save settings: {e}");
-                }
+                self.save_setting("window_style", style.setting());
                 // The layout changes, which makes the editor lose the keyboard focus.
                 iced::widget::operation::focus(EDITOR)
             }
@@ -988,9 +1001,7 @@ impl Ide {
                 self.check_before = !self.check_before;
                 let on = self.check_before;
                 self.status = format!("Check before compile/run {}", if on { "on" } else { "off" });
-                if let Err(e) = platform::write_setting("check_before", if on { "true" } else { "false" }) {
-                    self.status = format!("Cannot save settings: {e}");
-                }
+                self.save_setting("check_before", if on { "true" } else { "false" });
                 Task::none()
             }
             Message::ToggleVim => {
@@ -1000,9 +1011,7 @@ impl Ide {
                 };
                 let on = self.vim.is_some();
                 self.status = format!("Vim mode {}", if on { "on" } else { "off" });
-                if let Err(e) = platform::write_setting("vim", if on { "true" } else { "false" }) {
-                    self.status = format!("Cannot save settings: {e}");
-                }
+                self.save_setting("vim", if on { "true" } else { "false" });
                 Task::none()
             }
             Message::CompletionPick(index) => {
@@ -1154,10 +1163,7 @@ impl Ide {
             }
             Message::ToggleStartupCheck(on) => {
                 self.check_at_startup = on;
-                let value = if on { "true" } else { "false" };
-                if let Err(e) = platform::write_setting("check_dependencies", value) {
-                    self.status = format!("Cannot save settings: {e}");
-                }
+                self.save_setting("check_dependencies", if on { "true" } else { "false" });
                 Task::none()
             }
             Message::CloseDeps => {
@@ -1393,7 +1399,9 @@ impl Ide {
     fn choose_language(&mut self, index: usize) -> Task<Message> {
         let ext = filetype::ext_of(index);
         self.language = None;
-        filetype::remember(ext);
+        if self.persist_settings {
+            filetype::remember(ext);
+        }
         self.new_window_of(ext);
         iced::widget::operation::focus(EDITOR)
     }
@@ -4051,6 +4059,7 @@ mod language_tests {
     fn the_last_choice_is_preselected_next_time() {
         let _settings = isolate_settings();
         let mut ide = Ide::default();
+        ide.persist_settings = true;
         let _ = ide.ask_language(false);
         send(&mut ide, [Message::Nav(NavKey::Char('m'))]);
         let _ = ide.ask_language(false);
@@ -4149,6 +4158,7 @@ mod window_style_tests {
     fn choosing_a_style_applies_it_and_saves_it() {
         let _settings = isolate_settings();
         let mut ide = Ide::default();
+        ide.persist_settings = true;
         send(&mut ide, [Message::WindowStyle(WindowStyle::Vertical)]);
         assert_eq!(ide.window_style, WindowStyle::Vertical);
         assert_eq!(ide.status, "Window style: vertical tabs");
@@ -4384,5 +4394,44 @@ mod preview_tests {
         assert_eq!(ide.status, "Links to a heading are not followed yet");
         send(&mut ide, [Message::PreviewLink("gone.md".into())]);
         assert_eq!(ide.status, "Cannot open the link: gone.md");
+    }
+}
+
+#[cfg(test)]
+mod settings_safety_tests {
+    use super::*;
+    use crate::test_support::isolate_settings;
+
+    #[test]
+    fn a_default_ide_never_writes_settings() {
+        let _settings = isolate_settings();
+        let file = platform::config_path().expect("settings path");
+        let _ = std::fs::remove_file(&file);
+        let mut ide = Ide::default();
+        assert!(!ide.persist_settings);
+        for message in [
+            Message::WindowStyle(WindowStyle::Vertical),
+            Message::ToggleCheckBefore,
+            Message::ToggleVim,
+            Message::ToggleStartupCheck(false),
+            Message::New,
+            Message::NewFileType(1),
+        ] {
+            let _ = ide.update(message);
+        }
+        assert!(!file.exists(), "no settings file was written");
+        assert_eq!(ide.window_style, WindowStyle::Vertical, "the change itself still applies");
+        assert_eq!(ide.untitled_ext, Some("py"));
+    }
+
+    #[test]
+    fn the_real_program_writes_settings() {
+        let _settings = isolate_settings();
+        let file = platform::config_path().expect("settings path");
+        let _ = std::fs::remove_file(&file);
+        let mut ide = Ide::default();
+        ide.persist_settings = true;
+        let _ = ide.update(Message::ToggleCheckBefore);
+        assert_eq!(platform::read_setting("check_before").as_deref(), Some("true"));
     }
 }

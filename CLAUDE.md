@@ -52,6 +52,9 @@ A Turbo Pascal-style IDE for Rust and Python, with two front ends over one libra
   (character columns) and LSP (UTF-16, handled in `lsp.rs`). Lines may contain Thai text.
 - **Positioning the cursor:** `Content::move_to` with `selection: None` keeps an old selection,
   and a Move with any selection only collapses it. Use `vim::place(content, position)`.
+- `Ide::default()` (what tests use) never writes settings: saving goes through
+  `Ide::save_setting`, which does nothing unless `persist_settings` is on (only `Ide::new` turns
+  it on). A test that checks saving must turn it on and call `isolate_settings()`.
 - Settings live in one `key=value` file (`platform::config_path`). Tests that save settings must
   point `RUST_IDE_CONFIG_FILE` at a temp file and take turns (see `isolate_settings()` in the
   `language_tests` modules); never let a test write the real file.
