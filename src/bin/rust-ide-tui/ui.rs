@@ -22,6 +22,7 @@ const BAR: Style = Style::new().fg(Color::Black).bg(SILVER);
 const HOTKEY: Style = Style::new().fg(DARK_RED).bg(SILVER);
 const CHOSEN: Style = Style::new().fg(Color::Black).bg(GREEN);
 const EDITOR: Style = Style::new().fg(Color::Rgb(255, 255, 85)).bg(BLUE);
+const CURSOR: Style = Style::new().fg(Color::Rgb(0, 0, 170)).bg(Color::Rgb(255, 255, 85));
 const PANEL: Style = Style::new().fg(Color::Black).bg(TEAL);
 const MESSAGES_HEIGHT: u16 = 6;
 
@@ -130,6 +131,9 @@ fn draw_editor(frame: &mut Frame, app: &App, area: Rect) {
     let buffer = app.buffer();
     let mut highlighter = LineHighlighter::new(buffer.lang());
     let width = area.width as usize;
+    // The cursor is drawn as a colored block (the terminal's own cursor color
+    // may be unreadable on the blue editor), so the real cursor stays hidden.
+    let show_cursor = matches!(app.mode, Mode::Edit);
     let mut lines = Vec::with_capacity(area.height as usize);
     // Lines above the view are still lexed, for multi-line comments/strings.
     for (row, text) in buffer.lines.iter().enumerate().take(buffer.scroll + area.height as usize) {
@@ -150,17 +154,19 @@ fn draw_editor(frame: &mut Frame, app: &App, area: Rect) {
                 break;
             }
             let c = if c == '\t' { ' ' } else { c };
-            spans.push(Span::styled(c.to_string(), styles[byte]));
+            let style = if show_cursor && row == buffer.row && char_index == buffer.char_col() { CURSOR } else { styles[byte] };
+            spans.push(Span::styled(c.to_string(), style));
+        }
+        if show_cursor && row == buffer.row {
+            let len = text.chars().count();
+            if buffer.char_col() >= len && buffer.char_col() < buffer.hscroll + width {
+                spans.push(Span::styled(" ", CURSOR));
+            }
         }
         lines.push(Line::from(spans));
     }
     frame.render_widget(Paragraph::new(lines).style(EDITOR), area);
 
-    if matches!(app.mode, Mode::Edit) {
-        let x = area.x + (buffer.char_col() - buffer.hscroll) as u16;
-        let y = area.y + (buffer.row - buffer.scroll) as u16;
-        frame.set_cursor_position(Position::new(x, y));
-    }
 }
 
 fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
