@@ -10,4 +10,5 @@ pub mod output;
 pub mod platform;
 pub mod runner;
 pub mod search;
+pub mod templates;
 pub mod vim;

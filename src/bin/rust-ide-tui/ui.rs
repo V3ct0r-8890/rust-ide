@@ -8,7 +8,9 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use rust_ide::filetype;
 use rust_ide::highlight::{Highlight, LineHighlighter};
 
-use crate::app::{App, MENUS, Menu, Mode, PromptKind};
+use crate::app::{
+    App, MENUS, Menu, Mode, PROJECT_CREATE, PROJECT_FOLDER, PROJECT_LANG, PROJECT_NAME, PROJECT_SIZE, ProjectDialog, PromptKind,
+};
 
 // Fixed RGB colors (the classic Turbo palette), so the contrast does not depend on
 // how the terminal theme maps the 16 ANSI colors.
@@ -63,6 +65,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Open(dialog) => draw_open(frame, dialog),
         Mode::Help { scroll } => draw_help(frame, *scroll),
         Mode::Language { selected, startup } => draw_language(frame, *selected, *startup),
+        Mode::Project(dialog) => draw_project(frame, dialog),
     }
 }
 
@@ -300,6 +303,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("F2 / Ctrl+S", "Save (asks for a name the first time)"),
     ("F3 / Ctrl+O", "Open a file (each in its own window)"),
     ("File > New", "Asks for the language: R Rust, P Python, T Text, M Markdown (or 1-4)"),
+    ("File > New project", "Rust or Python, size Simple/Low/Medium/Complex, a name and a folder (Tab moves, Enter creates)"),
     ("Alt+X / Ctrl+Q", "Exit (press twice to discard changes)"),
     ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
     ("Tab / Shift+Tab", "Indent / unindent"),
@@ -317,6 +321,64 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Alt+1 ... Alt+9", "Go to window 1-9; Alt+0 window list"),
     ("Alt+F3", "Close the window"),
 ];
+
+fn draw_project(frame: &mut Frame, state: &ProjectDialog) {
+    let area = centered(frame.area(), 72, 16);
+    frame.render_widget(Clear, area);
+    let block = dialog("New project");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = [
+        (PROJECT_LANG, "Language", 'l', format!("< {} >", state.lang.label())),
+        (PROJECT_SIZE, "Size", 's', format!("< {} >", state.size.label())),
+        (PROJECT_NAME, "Name", 'n', state.name.clone()),
+        (PROJECT_FOLDER, "Folder", 'f', state.folder.clone()),
+    ];
+    let width = inner.width as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    let mut cursor = None;
+    for (index, label, hotkey, value) in rows {
+        let (normal, hot) = if index == state.row { (CHOSEN, CHOSEN.fg(DARK_RED)) } else { (BAR, HOTKEY) };
+        let mut spans = vec![Span::styled(" ", normal)];
+        spans.extend(hotkey_spans(&format!("{label:<9}"), hotkey, normal, hot));
+        let text_row = index == PROJECT_NAME || index == PROJECT_FOLDER;
+        let room = width.saturating_sub(12);
+        // A long text shows its end, where the typing happens.
+        let shown: String = if value.chars().count() > room {
+            value.chars().skip(value.chars().count() - room).collect()
+        } else {
+            value.clone()
+        };
+        let used = 10 + shown.chars().count();
+        if text_row && index == state.row {
+            cursor = Some(Position::new(inner.x + used as u16, inner.y + lines.len() as u16));
+        }
+        spans.push(Span::styled(format!("{shown}{}", " ".repeat(width.saturating_sub(used))), normal));
+        lines.push(Line::from(spans));
+    }
+    for (index, label, hotkey) in [(PROJECT_CREATE, "Create", 'c'), (PROJECT_CREATE + 1, "Cancel", '\0')] {
+        let (normal, hot) = if index == state.row { (CHOSEN, CHOSEN.fg(DARK_RED)) } else { (BAR, HOTKEY) };
+        let mut spans = vec![Span::styled(" ", normal)];
+        spans.extend(hotkey_spans(label, hotkey, normal, hot));
+        spans.push(Span::styled(" ".repeat(width.saturating_sub(label.len() + 1)), normal));
+        lines.push(Line::from(spans));
+    }
+    let target = std::path::Path::new(state.folder.trim()).join(state.name.trim());
+    let problem = match rust_ide::templates::check_name(&state.name) {
+        _ if !state.error.is_empty() => state.error.clone(),
+        Err(why) if !state.name.is_empty() => why,
+        _ => String::new(),
+    };
+    lines.push(Line::from(""));
+    lines.push(Line::from(format!(" {}", state.size.describe(state.lang))));
+    lines.push(Line::from(format!(" Creates {}", target.display())));
+    lines.push(Line::from(Span::styled(format!(" {problem}"), BAR.fg(DARK_RED))));
+    lines.push(Line::from(" Tab/Up/Down field  Left/Right or letters change  Enter Create  Esc Cancel"));
+    frame.render_widget(Paragraph::new(lines).style(BAR), inner);
+    if let Some(position) = cursor {
+        frame.set_cursor_position(position);
+    }
+}
 
 fn draw_language(frame: &mut Frame, selected: usize, startup: bool) {
     let title = if startup { "Choose a language" } else { "New file: choose a language" };
@@ -406,6 +468,17 @@ mod tests {
         app.ask_language(false);
         let text = screen(&app, 80, 20);
         assert!(text.contains("New file: choose a language") && text.contains("Esc: cancel"));
+    }
+
+    #[test]
+    fn draws_the_new_project_dialog() {
+        let mut app = App::new(&[]);
+        app.ask_project();
+        let text = screen(&app, 90, 24);
+        for expected in ["New project", "Language", "< Rust >", "Size", "Name", "Folder", "Create", "Cancel", "Creates"] {
+            assert!(text.contains(expected), "missing {expected:?} in
+{text}");
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rust_ide::runner::{BuildResult, Diagnostic, RunTarget};
 use rust_ide::filetype;
 use rust_ide::search;
+use rust_ide::templates::{self, Lang, Size};
 
 use crate::buffer::Buffer;
 
@@ -50,6 +51,7 @@ impl Menu {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     New,
+    NewProject,
     Open,
     Save,
     SaveAs,
@@ -113,6 +115,26 @@ pub enum Mode {
     Help { scroll: usize },
     /// "Choose a language" list (start-up and File > New).
     Language { selected: usize, startup: bool },
+    /// File > New project: language, size, name and folder.
+    Project(ProjectDialog),
+}
+
+pub const PROJECT_LANG: usize = 0;
+pub const PROJECT_SIZE: usize = 1;
+pub const PROJECT_NAME: usize = 2;
+pub const PROJECT_FOLDER: usize = 3;
+pub const PROJECT_CREATE: usize = 4;
+pub const PROJECT_ROWS: usize = 6;
+
+pub struct ProjectDialog {
+    pub lang: Lang,
+    pub size: Size,
+    pub name: String,
+    pub folder: String,
+    /// The focused row (`PROJECT_*`).
+    pub row: usize,
+    /// Why the last Create failed.
+    pub error: String,
 }
 
 /// F3: a Turbo-style file list of one directory.
@@ -207,6 +229,7 @@ impl App {
         match menu {
             Menu::File => vec![
                 item("New", 'n', "", Action::New),
+                item("New project...", 'p', "", Action::NewProject),
                 item("Open...", 'o', "F3", Action::Open),
                 item("Save", 's', "F2", Action::Save),
                 item("Save as...", 'a', "", Action::SaveAs),
@@ -257,6 +280,7 @@ impl App {
             Mode::Prompt { .. } => self.prompt_key(key),
             Mode::Open(_) => self.open_key(key),
             Mode::Language { .. } => self.language_key(key),
+            Mode::Project(_) => self.project_key(key),
             Mode::Help { scroll } => {
                 match key.code {
                     KeyCode::Up => *scroll = scroll.saturating_sub(1),
@@ -394,6 +418,7 @@ impl App {
         let confirmed = self.confirm.take() == Some(action.clone());
         match action {
             Action::New => self.ask_language(false),
+            Action::NewProject => self.ask_project(),
             Action::Open => {
                 let dir = self
                     .buffer()
@@ -528,6 +553,88 @@ impl App {
     }
 
     // ----- Windows -----
+
+    // ----- New project -----
+
+    pub fn ask_project(&mut self) {
+        self.mode = Mode::Project(ProjectDialog {
+            lang: templates::last_lang(),
+            size: templates::last_size(),
+            name: String::new(),
+            folder: templates::default_folder(),
+            row: PROJECT_LANG,
+            error: String::new(),
+        });
+    }
+
+    fn project_key(&mut self, key: KeyEvent) -> Effect {
+        let Mode::Project(dialog) = &mut self.mode else { return Effect::None };
+        let row = dialog.row;
+        let text_row = row == PROJECT_NAME || row == PROJECT_FOLDER;
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Edit,
+            KeyCode::Up => dialog.row = (row + PROJECT_ROWS - 1) % PROJECT_ROWS,
+            KeyCode::Down | KeyCode::Tab => dialog.row = (row + 1) % PROJECT_ROWS,
+            KeyCode::BackTab => dialog.row = (row + PROJECT_ROWS - 1) % PROJECT_ROWS,
+            KeyCode::Enter if row == PROJECT_CREATE + 1 => self.mode = Mode::Edit,
+            KeyCode::Enter => self.create_project(),
+            KeyCode::Backspace if text_row => {
+                let text = if row == PROJECT_NAME { &mut dialog.name } else { &mut dialog.folder };
+                text.pop();
+                dialog.error.clear();
+            }
+            KeyCode::Char(c) if text_row => {
+                let text = if row == PROJECT_NAME { &mut dialog.name } else { &mut dialog.folder };
+                text.push(c);
+                dialog.error.clear();
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if row == PROJECT_LANG || row == PROJECT_SIZE => {
+                let back = key.code == KeyCode::Left;
+                let step = |len: usize, at: usize| if back { (at + len - 1) % len } else { (at + 1) % len };
+                if row == PROJECT_LANG {
+                    let at = templates::LANGS.iter().position(|l| *l == dialog.lang).unwrap_or(0);
+                    dialog.lang = templates::LANGS[step(templates::LANGS.len(), at)];
+                } else {
+                    let at = templates::SIZES.iter().position(|s| *s == dialog.size).unwrap_or(0);
+                    dialog.size = templates::SIZES[step(templates::SIZES.len(), at)];
+                }
+            }
+            KeyCode::Char(c) => {
+                let c = c.to_ascii_lowercase();
+                if row == PROJECT_LANG {
+                    if let Some(lang) = templates::LANGS.into_iter().find(|l| l.label().to_lowercase().starts_with(c)) {
+                        dialog.lang = lang;
+                    }
+                } else if row == PROJECT_SIZE {
+                    if let Some(size) = templates::SIZES.into_iter().find(|s| s.label().to_lowercase().starts_with(c)) {
+                        dialog.size = size;
+                    }
+                } else if c == 'c' {
+                    self.create_project();
+                }
+            }
+            _ => {}
+        }
+        Effect::None
+    }
+
+    fn create_project(&mut self) {
+        let Mode::Project(dialog) = &mut self.mode else { return };
+        let name = dialog.name.trim().to_string();
+        let folder = PathBuf::from(dialog.folder.trim());
+        match templates::create(dialog.lang, dialog.size, &name, &folder) {
+            Err(error) => dialog.error = error,
+            Ok(created) => {
+                let (lang, size, folder_text) = (dialog.lang, dialog.size, dialog.folder.trim().to_string());
+                self.mode = Mode::Edit;
+                templates::remember(lang, size, &folder_text);
+                self.open(&created.main_file);
+                if self.buffer().path.is_some() {
+                    self.status = format!("Created {} {} project in {}", size.label(), lang.label(), created.dir.display());
+                }
+            }
+        }
+    }
 
     // ----- New file: choose a language -----
 
@@ -1021,5 +1128,62 @@ mod tests {
         assert_eq!(dialog.visible().len(), 1);
         app.handle(key(KeyCode::Enter));
         assert_eq!(app.buffer().name(), "pick_me.rs");
+    }
+
+    #[test]
+    fn new_project_dialog_chooses_and_creates() {
+        let _settings = isolate_settings();
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tui-project-test");
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let mut app = App::new(&[]);
+        // File > New project... (menu hotkey P).
+        app.handle(with(KeyCode::Char('f'), KeyModifiers::ALT));
+        app.handle(key(KeyCode::Char('p')));
+        assert!(matches!(app.mode, Mode::Project(_)));
+        app.handle(key(KeyCode::Char('p'))); // language: Python
+        app.handle(key(KeyCode::Down));
+        app.handle(key(KeyCode::Char('m'))); // size: Medium
+        app.handle(key(KeyCode::Down));
+        typed(&mut app, "tui-demo"); // name
+        app.handle(key(KeyCode::Down));
+        for _ in 0..app_folder_len(&app) {
+            app.handle(key(KeyCode::Backspace));
+        }
+        typed(&mut app, &parent.to_string_lossy());
+        {
+            let Mode::Project(d) = &app.mode else { panic!() };
+            assert_eq!((d.lang, d.size), (Lang::Python, Size::Medium));
+            assert_eq!(d.name, "tui-demo");
+        }
+        app.handle(key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Edit), "created");
+        let main = parent.join("tui-demo").join("src").join("tui_demo").join("__main__.py");
+        assert!(main.is_file());
+        assert_eq!(app.buffer().path.as_deref(), Some(main.as_path()));
+        assert_eq!(templates::last_size(), Size::Medium);
+    }
+
+    fn app_folder_len(app: &App) -> usize {
+        let Mode::Project(d) = &app.mode else { panic!() };
+        d.folder.chars().count()
+    }
+
+    #[test]
+    fn new_project_dialog_reports_problems_and_cancels() {
+        let _settings = isolate_settings();
+        let mut app = App::new(&[]);
+        app.ask_project();
+        app.handle(key(KeyCode::Down));
+        app.handle(key(KeyCode::Down));
+        typed(&mut app, "9lives");
+        app.handle(key(KeyCode::Enter));
+        let Mode::Project(d) = &app.mode else { panic!("still open") };
+        assert!(d.error.contains("letter"));
+        app.handle(key(KeyCode::Char('x')));
+        let Mode::Project(d) = &app.mode else { panic!() };
+        assert!(d.error.is_empty(), "typing clears the message");
+        app.handle(key(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Edit));
     }
 }

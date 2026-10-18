@@ -79,6 +79,17 @@ in a window. Images show only their description for now.
 **Starting without a file** (no file name on the command line): the IDE asks which language to use: Rust (.rs),
 Python (.py), or, for any other language, Text (.txt) or Markdown (.md). Press R / P / T / M or 1-4 (or click), Enter takes
 the highlighted one (the one you chose last time), Esc gives a plain Rust window. **File > New** asks the same question.
+
+**File > New project...** (Alt+F P; both versions) creates a ready-made project: pick Rust or Python, a size, a project name and a folder (Tab / Up / Down move between the fields, Left/Right or the letters change a choice, Enter creates, Esc cancels). The new project folder is `folder/name`, and its main file opens, ready for F5. Sizes:
+
+| Size | Rust | Python |
+|---|---|---|
+| Simple | Cargo project, one `main.rs` | one `main.py` |
+| Low | binary crate in modules (`greeting`, `stats`) with unit tests | package with `__main__.py` and modules, pytest tests |
+| Medium | library + binary, error type, `config.txt`, integration tests, README | `pyproject.toml`, `src/` layout, `config.toml`, pytest, ruff settings, README |
+| Complex | Cargo workspace (util, core, cli), tests, a benchmark, CI workflow | `src/` package with argparse CLI, config, logging, tests, CI workflow |
+
+Rust projects need only Cargo; the Python ones need `pytest` for their tests (`pip install pytest`; Medium and Complex list it in `pyproject.toml`).
 The choice decides the highlighting, the `NONAME` file name and what Save As offers. `.txt` and `.md` files open like
 any other file, without highlighting.
 
@@ -144,8 +155,7 @@ and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
 Windows and Linux packages.
 
 Next, easiest first:
-new-project templates (Simple / Low / Medium / Complex for Rust and
-Python), the rest of the terminal version, C# support.
+the rest of the terminal version (including a Settings dialog), C# support.
 
 See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limitations.
 

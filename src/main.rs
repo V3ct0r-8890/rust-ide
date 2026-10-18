@@ -5,7 +5,7 @@
 
 mod cursor;
 
-use rust_ide::{dap, deps, filetype, highlight, lsp, output, platform, runner, search, vim};
+use rust_ide::{dap, deps, filetype, highlight, lsp, output, platform, runner, search, templates, vim};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -58,6 +58,8 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("File", "F2 / Ctrl+S", "Save"),
     ("File", "F3 / Ctrl+O", "Open (in a new window)"),
     ("File", "Alt+F N / A", "New window (asks for the language) / Save as (File menu)"),
+    ("File", "Alt+F P", "New project: Rust or Python, size Simple/Low/Medium/Complex, a name and a folder"),
+    ("File", "Tab / Up / Down", "In the New project dialog: next / previous field; Left/Right or letters change a choice; Enter creates"),
     ("File", "R P T M or 1-4", "In the language list: Rust, Python, Text, Markdown (Up/Down, Enter, Esc work too)"),
     ("File", "Alt+X", "Exit (press twice to discard changes)"),
     ("Window", "F6 / Shift+F6", "Next / previous window"),
@@ -357,6 +359,7 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
     match menu {
         Menu::File => vec![
             item("New", 'n', "", Message::New),
+            item("New project...", 'p', "", Message::OpenProject),
             item("Open...", 'o', "F3", Message::Open),
             item("Save", 's', "F2", Message::Save),
             item("Save as...", 'a', "", Message::SaveAs),
@@ -591,6 +594,7 @@ struct Ide {
     untitled_ext: Option<&'static str>,
     language: Option<LanguageDialog>,
     settings: Option<SettingsDialog>,
+    project: Option<ProjectDialog>,
     window_style: WindowStyle,
     /// Settings changes are written to the settings file (true in the real program).
     persist_settings: bool,
@@ -663,6 +667,27 @@ struct SettingsDialog {
 
 /// Rows of the settings dialog (the last one closes it).
 const SETTINGS_ROWS: usize = 7;
+
+/// File > New project...: language, size, name and folder of a template project.
+struct ProjectDialog {
+    lang: templates::Lang,
+    size: templates::Size,
+    name: String,
+    folder: String,
+    /// The focused row: see `PROJECT_*`.
+    row: usize,
+    /// Why the last Create failed.
+    error: String,
+}
+
+const PROJECT_LANG: usize = 0;
+const PROJECT_SIZE: usize = 1;
+const PROJECT_NAME: usize = 2;
+const PROJECT_FOLDER: usize = 3;
+const PROJECT_CREATE: usize = 4;
+const PROJECT_ROWS: usize = 6;
+const PROJECT_NAME_INPUT: &str = "project-name";
+const PROJECT_FOLDER_INPUT: &str = "project-folder";
 
 /// The "choose a language" list shown at start-up and by File > New.
 struct LanguageDialog {
@@ -751,6 +776,12 @@ enum Message {
     OpenSettings,
     /// A settings row was used: the row, and -1 / +1 for Left / Right, 0 for Enter or a click.
     SettingsAct(usize, i8),
+    OpenProject,
+    ProjectName(String),
+    ProjectFolder(String),
+    /// A row of the New project dialog was clicked: the row, and -1 / +1 for Left / Right.
+    ProjectAct(usize, i8),
+    ProjectCreate,
     WindowOpened,
     WindowClosed(window::Id),
     FontLarger,
@@ -1016,6 +1047,23 @@ impl Ide {
                 self.settings = Some(SettingsDialog { selected: 0 });
                 Task::none()
             }
+            Message::OpenProject => self.open_project_dialog(),
+            Message::ProjectName(name) => {
+                if let Some(dialog) = &mut self.project {
+                    dialog.name = name;
+                    dialog.error.clear();
+                }
+                Task::none()
+            }
+            Message::ProjectFolder(folder) => {
+                if let Some(dialog) = &mut self.project {
+                    dialog.folder = folder;
+                    dialog.error.clear();
+                }
+                Task::none()
+            }
+            Message::ProjectAct(row, dir) => self.project_act(row, dir),
+            Message::ProjectCreate => self.project_create(),
             Message::SettingsAct(row, dir) => {
                 if let Some(dialog) = &mut self.settings {
                     dialog.selected = row;
@@ -1218,6 +1266,10 @@ impl Ide {
                 }
                 if self.settings.is_some() {
                     self.settings = None;
+                    return iced::widget::operation::focus(EDITOR);
+                }
+                if self.project.is_some() {
+                    self.project = None;
                     return iced::widget::operation::focus(EDITOR);
                 }
                 if self.menu.is_some() {
@@ -2029,6 +2081,118 @@ impl Ide {
         Task::batch([close, iced::widget::operation::focus(EDITOR)])
     }
 
+    // ----- New project dialog -----
+
+    fn open_project_dialog(&mut self) -> Task<Message> {
+        self.project = Some(ProjectDialog {
+            lang: templates::last_lang(),
+            size: templates::last_size(),
+            name: String::new(),
+            folder: templates::default_folder(),
+            row: PROJECT_LANG,
+            error: String::new(),
+        });
+        // Arrow keys and letters must reach the dialog, not a text field.
+        iced::widget::operation::focus(EDITOR)
+    }
+
+    /// Moves to a row and gives a text row the keyboard focus.
+    fn project_focus(&mut self, row: usize) -> Task<Message> {
+        let Some(dialog) = &mut self.project else { return Task::none() };
+        dialog.row = row;
+        match row {
+            PROJECT_NAME => iced::widget::operation::focus(PROJECT_NAME_INPUT),
+            PROJECT_FOLDER => iced::widget::operation::focus(PROJECT_FOLDER_INPUT),
+            _ => iced::widget::operation::focus(EDITOR),
+        }
+    }
+
+    fn project_key(&mut self, key: NavKey) -> Task<Message> {
+        let Some(dialog) = &self.project else { return Task::none() };
+        let row = dialog.row;
+        let text_row = row == PROJECT_NAME || row == PROJECT_FOLDER;
+        match key {
+            NavKey::Up => self.project_focus((row + PROJECT_ROWS - 1) % PROJECT_ROWS),
+            NavKey::Down | NavKey::Tab => self.project_focus((row + 1) % PROJECT_ROWS),
+            // In a text field the keys edit the text (Enter creates, through on_submit).
+            _ if text_row => Task::none(),
+            NavKey::Left => self.project_act(row, -1),
+            NavKey::Right => self.project_act(row, 1),
+            NavKey::Enter | NavKey::Char(' ') => self.project_act(row, 0),
+            NavKey::Char(c) => {
+                match row {
+                    PROJECT_LANG => {
+                        if let Some(lang) = templates::LANGS.into_iter().find(|l| l.label().to_lowercase().starts_with(c)) {
+                            if let Some(dialog) = &mut self.project {
+                                dialog.lang = lang;
+                            }
+                        }
+                    }
+                    PROJECT_SIZE => {
+                        if let Some(size) = templates::SIZES.into_iter().find(|s| s.label().to_lowercase().starts_with(c)) {
+                            if let Some(dialog) = &mut self.project {
+                                dialog.size = size;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// Changes or activates a row: `dir` is -1 / +1 (Left / Right) or 0 (Enter, click).
+    fn project_act(&mut self, row: usize, dir: i8) -> Task<Message> {
+        let Some(dialog) = &mut self.project else { return Task::none() };
+        let step = |len: usize, at: usize| if dir < 0 { (at + len - 1) % len } else { (at + 1) % len };
+        match row {
+            PROJECT_LANG => {
+                let at = templates::LANGS.iter().position(|l| *l == dialog.lang).unwrap_or(0);
+                dialog.lang = templates::LANGS[step(templates::LANGS.len(), at)];
+                dialog.row = row;
+                Task::none()
+            }
+            PROJECT_SIZE => {
+                let at = templates::SIZES.iter().position(|s| *s == dialog.size).unwrap_or(0);
+                dialog.size = templates::SIZES[step(templates::SIZES.len(), at)];
+                dialog.row = row;
+                Task::none()
+            }
+            PROJECT_NAME | PROJECT_FOLDER => self.project_focus(row),
+            PROJECT_CREATE => self.project_create(),
+            _ => {
+                self.project = None;
+                iced::widget::operation::focus(EDITOR)
+            }
+        }
+    }
+
+    fn project_create(&mut self) -> Task<Message> {
+        let Some(dialog) = &mut self.project else { return Task::none() };
+        let name = dialog.name.trim().to_string();
+        let folder = PathBuf::from(dialog.folder.trim());
+        match templates::create(dialog.lang, dialog.size, &name, &folder) {
+            Err(error) => {
+                dialog.error = error;
+                Task::none()
+            }
+            Ok(created) => {
+                let (lang, size, folder_text) = (dialog.lang, dialog.size, dialog.folder.trim().to_string());
+                self.project = None;
+                if self.persist_settings {
+                    templates::remember(lang, size, &folder_text);
+                }
+                let opened = self.open_path(&created.main_file);
+                if opened {
+                    self.status = format!("Created {} {} project in {}", size.label(), lang.label(), created.dir.display());
+                }
+                iced::widget::operation::focus(EDITOR)
+            }
+        }
+    }
+
     // ----- Settings dialog -----
 
     fn settings_key(&mut self, key: NavKey) -> Task<Message> {
@@ -2396,6 +2560,9 @@ impl Ide {
         }
         if self.settings.is_some() {
             return self.settings_key(key);
+        }
+        if self.project.is_some() {
+            return self.project_key(key);
         }
         if let Some(menu) = self.menu {
             return self.menu_key(menu, key);
@@ -3147,7 +3314,8 @@ impl Ide {
             || self.help
             || self.deps.is_some()
             || self.language.is_some()
-            || self.settings.is_some();
+            || self.settings.is_some()
+            || self.project.is_some();
         let vim_mode = self.vim.as_ref().map(|v| (v.mode, v.command.is_some()));
         let editor = text_editor(&self.content)
             .id(EDITOR)
@@ -3245,6 +3413,9 @@ impl Ide {
         }
         if let Some(dialog) = &self.settings {
             layers = layers.push(self.settings_dialog(dialog));
+        }
+        if let Some(dialog) = &self.project {
+            layers = layers.push(project_dialog(dialog));
         }
         if self.help {
             layers = layers.push(help_screen());
@@ -3706,6 +3877,90 @@ fn legacy_title_text(name: &str, number: usize, count: usize) -> (String, String
     (format!("\u{2550}\u{2550}[\u{25A0}]\u{2550}\u{2550} {name} "), format!(" {number}/{count} \u{2550}\u{2550}"))
 }
 
+fn project_dialog(dialog: &ProjectDialog) -> Element<'static, Message> {
+    let choice = |row: usize, label: &str, hotkey: char, value: String| {
+        let chosen = dialog.row == row;
+        button(row![
+            hotkey_label(label, hotkey),
+            Space::new().width(Length::Fill),
+            text(format!("< {value} >")).color(Color::BLACK),
+        ])
+        .width(Length::Fill)
+        .padding([3, 10])
+        .on_press(Message::ProjectAct(row, 1))
+        .style(move |_, status| button::Style {
+            background: Some(Background::Color(
+                if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
+            )),
+            ..button::Style::default()
+        })
+    };
+    let field = |row: usize, label: &'static str, value: &str, on_input: fn(String) -> Message, id: &'static str| {
+        let chosen = dialog.row == row;
+        container(
+            iced::widget::row![
+                text(label).color(Color::BLACK).width(80),
+                text_input("", value)
+                    .id(id)
+                    .on_input(on_input)
+                    .on_submit(Message::ProjectCreate)
+                    .font(Font::MONOSPACE)
+                    .padding([2, 6]),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .padding([3, 10])
+        .width(Length::Fill)
+        .style(move |_| container::Style::default().background(if chosen { TURBO_GREEN } else { TURBO_GRAY }))
+    };
+    let action = |row: usize, label: &str, hotkey: char| {
+        let chosen = dialog.row == row;
+        button(hotkey_label(label, hotkey))
+            .width(Length::Fill)
+            .padding([3, 10])
+            .on_press(Message::ProjectAct(row, 0))
+            .style(move |_, status| button::Style {
+                background: Some(Background::Color(
+                    if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
+                )),
+                ..button::Style::default()
+            })
+    };
+    let problem = match templates::check_name(&dialog.name) {
+        _ if !dialog.error.is_empty() => dialog.error.clone(),
+        Err(why) if !dialog.name.is_empty() => why,
+        _ => String::new(),
+    };
+    let target = std::path::Path::new(dialog.folder.trim()).join(dialog.name.trim());
+    let body = column![
+        container(text(" New project ").color(Color::WHITE))
+            .width(Length::Fill)
+            .padding(2)
+            .style(|_| container::Style::default().background(TURBO_BLUE)),
+        column![
+            choice(PROJECT_LANG, "Language", 'l', dialog.lang.label().to_string()),
+            choice(PROJECT_SIZE, "Size", 's', dialog.size.label().to_string()),
+            field(PROJECT_NAME, "Name", &dialog.name, Message::ProjectName, PROJECT_NAME_INPUT),
+            field(PROJECT_FOLDER, "Folder", &dialog.folder, Message::ProjectFolder, PROJECT_FOLDER_INPUT),
+            action(PROJECT_CREATE, "Create", 'c'),
+            action(PROJECT_CREATE + 1, "Cancel", '\0'),
+        ]
+        .padding(8),
+        container(text(dialog.size.describe(dialog.lang)).color(TURBO_DARK_GRAY).size(13)).padding([0, 10]),
+        container(text(format!("Creates {}", target.display())).color(TURBO_DARK_GRAY).size(13)).padding([0, 10]),
+        container(text(problem).color(TURBO_RED).size(13)).padding([2, 10]),
+        container(text(" Tab/Up/Down field  Left/Right or letters change  Enter Create  Esc cancels").color(Color::BLACK).size(13))
+            .padding(10),
+    ];
+    opaque(
+        container(container(body).width(620).style(|_| container::Style {
+            border: iced::Border::default().color(Color::BLACK).width(1),
+            ..container::Style::default().background(TURBO_GRAY)
+        }))
+        .center(Length::Fill),
+    )
+}
+
 fn language_dialog(dialog: &LanguageDialog) -> Element<'static, Message> {
     let rows = filetype::FILE_TYPES.iter().enumerate().map(|(index, kind)| {
         let chosen = index == dialog.selected;
@@ -4041,7 +4296,7 @@ mod keyboard_tests {
         send(&mut ide, [Message::Nav(NavKey::Right)]);
         assert_eq!(ide.menu, Some(Menu::File));
         send(&mut ide, [Message::Nav(NavKey::Up)]);
-        assert_eq!(ide.menu_item, 4, "Up from the first item wraps to Exit");
+        assert_eq!(ide.menu_item, 5, "Up from the first item wraps to Exit");
 
         send(&mut ide, [Message::OpenMenu(Menu::Debug), Message::Nav(NavKey::Enter)]);
         assert!(ide.menu.is_none(), "a disabled item does nothing but close");
@@ -5194,6 +5449,112 @@ mod settings_dialog_tests {
         assert_eq!(ide.settings.as_ref().map(|d| d.selected), Some(3));
         keys(&mut ide, [NavKey::Char('x')]);
         assert_eq!(ide.content.text(), "");
+        let _ = ide.view(window::Id::unique());
+    }
+}
+
+#[cfg(test)]
+mod project_dialog_tests {
+    use super::*;
+    use crate::test_support::isolate_settings;
+    use rust_ide::templates::{Lang, Size};
+
+    fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
+        for message in messages {
+            let _ = ide.update(message);
+        }
+    }
+
+    fn keys(ide: &mut Ide, keys: impl IntoIterator<Item = NavKey>) {
+        for key in keys {
+            let _ = ide.update(Message::Nav(key));
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("gui-project-test").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_file_menu_lists_it_and_escape_closes_it() {
+        let mut ide = Ide::default();
+        let items = menu_items(Menu::File, ide.toggles(), &[], 0);
+        assert!(items.iter().any(|i| i.label == "New project..."));
+        send(&mut ide, [Message::OpenProject]);
+        assert!(ide.project.is_some());
+        let _ = ide.view(window::Id::unique());
+        send(&mut ide, [Message::Escape]);
+        assert!(ide.project.is_none());
+    }
+
+    #[test]
+    fn keys_choose_language_and_size_and_move_between_fields() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::OpenProject]);
+        keys(&mut ide, [NavKey::Char('p')]);
+        assert_eq!(ide.project.as_ref().unwrap().lang, Lang::Python);
+        keys(&mut ide, [NavKey::Left]);
+        assert_eq!(ide.project.as_ref().unwrap().lang, Lang::Rust);
+        keys(&mut ide, [NavKey::Down, NavKey::Char('c')]);
+        assert_eq!(ide.project.as_ref().unwrap().size, Size::Complex);
+        keys(&mut ide, [NavKey::Right]);
+        assert_eq!(ide.project.as_ref().unwrap().size, Size::Simple, "wraps round");
+        keys(&mut ide, [NavKey::Down]);
+        assert_eq!(ide.project.as_ref().unwrap().row, PROJECT_NAME);
+        // In a text field the letters belong to the text, not to the dialog.
+        keys(&mut ide, [NavKey::Char('p'), NavKey::Left]);
+        assert_eq!(ide.project.as_ref().unwrap().lang, Lang::Rust);
+        keys(&mut ide, [NavKey::Up, NavKey::Up]);
+        assert_eq!(ide.project.as_ref().unwrap().row, PROJECT_LANG);
+        let _ = ide.view(window::Id::unique());
+    }
+
+    #[test]
+    fn create_makes_the_project_and_opens_its_main_file() {
+        let _settings = isolate_settings();
+        let parent = scratch("create");
+        let mut ide = Ide::default();
+        ide.persist_settings = true;
+        send(&mut ide, [Message::OpenProject]);
+        send(
+            &mut ide,
+            [
+                Message::ProjectFolder(parent.to_string_lossy().into_owned()),
+                Message::ProjectName("my-tool".into()),
+                Message::ProjectAct(PROJECT_LANG, 1),
+                Message::ProjectAct(PROJECT_SIZE, 1),
+                Message::ProjectCreate,
+            ],
+        );
+        assert!(ide.project.is_none());
+        let main = parent.join("my-tool").join("my_tool").join("__main__.py");
+        assert!(main.is_file());
+        assert_eq!(ide.path.as_deref(), Some(main.as_path()));
+        assert!(ide.content.text().contains("greet"));
+        assert_eq!(templates::last_lang(), Lang::Python);
+        assert_eq!(templates::last_size(), Size::Low);
+    }
+
+    #[test]
+    fn a_bad_name_or_existing_folder_keeps_the_dialog_open_with_a_reason() {
+        let _settings = isolate_settings();
+        let parent = scratch("bad");
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::OpenProject, Message::ProjectFolder(parent.to_string_lossy().into_owned())]);
+        send(&mut ide, [Message::ProjectName("1abc".into()), Message::ProjectCreate]);
+        assert!(ide.project.as_ref().unwrap().error.contains("letter"));
+        send(&mut ide, [Message::ProjectName("ok".into())]);
+        assert!(ide.project.as_ref().unwrap().error.is_empty(), "typing clears the message");
+        send(&mut ide, [Message::ProjectCreate, Message::OpenProject]);
+        send(
+            &mut ide,
+            [Message::ProjectFolder(parent.to_string_lossy().into_owned()), Message::ProjectName("ok".into()), Message::ProjectCreate],
+        );
+        assert!(ide.project.as_ref().unwrap().error.contains("already exists"));
         let _ = ide.view(window::Id::unique());
     }
 }
