@@ -16,6 +16,7 @@ Last updated: 2026-10-20. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 | Window style | Options > Window style (window version): **Legacy windows** (Turbo Pascal frame line with the name and window number), **Horizontal tabs** (default) or **Vertical tabs** (list on the left); same keys in every style; the choice is remembered |
 | New files | Started without a file, the IDE (both versions) asks which language to use: Rust, Python, or Text / Markdown for anything else; File > New asks too. The last choice is remembered and preselected; the type sets highlighting, the `NONAME.xx` name and the Save As default; `.txt` and `.md` open as plain files |
 | New project | **File > New project...** (Alt+F P, both versions): Rust or Python, size Simple / Low / Medium / Complex, a name and a folder; writes the project and opens its main file. All 8 templates are built, run and tested by `cargo test templates:: -- --ignored` (run in CI) |
+| Environment variables | **Options > General environment... / Project environment... / Show environment** (both versions, 0.2.14): `NAME=value` files for proxy, PATH and project variables, applied to everything the IDE starts; see the README |
 | Terminal: Replace, mouse, Options | `rust-ide-tui` (0.2.12): Replace all (Ctrl+H / Ctrl+R, one undo), mouse (menus, tabs, cursor, wheel; `--no-mouse` turns it off), Options > Check before run, Options > Line numbers (0.2.13) |
 | Settings dialog | Window version: **Options > Settings...** (Alt+O E) - preview place, window style, Vim mode, check before run, font size, dependencies; keyboard (Up/Down, Left/Right, Enter, letters, Esc) and mouse; changes apply and are remembered at once. The terminal version has no Options menu yet (backlog item 3) |
 | Font size | Window version: **Ctrl+=** larger, **Ctrl+-** smaller, **Ctrl+0** default (also Options menu, Alt+O B / S / R); 10 to 32 points, remembered (`font_size` in the settings file). Applies to the editor (with the block cursor), the Markdown preview and the user screen; menus and panels keep their size. The terminal version uses the terminal's own zoom |
@@ -35,12 +36,18 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 
 | # | Item | Effort |
 |---|---|---|
-| 1 | Development environments for project sessions (**next**) | L |
+| 1 | Development environments for project sessions: variables are done (0.2.14), the rest is **next** | L |
 | 2 | Line numbers in the window version | M |
 | 3 | Terminal version: the rest | L |
 | 4 | C# support | L |
 
-### 1. Development environments for project sessions - L (do this next)
+### 1. Development environments for project sessions - L (variables done, the rest is next)
+**Phase 1 is done in 0.2.14:** both groups of variables as plain `NAME=value` files
+(`environment.env` next to the settings file, and `.rust-ide/env` in the project; a project value
+wins; `$NAME` / `${NAME}` / `%NAME%` expand), applied to builds, runs, the debugger, language
+servers and tool checks, with Options > General environment / Project environment / Show
+environment in both front ends. Format decision taken: plain `NAME=value`, not TOML. Not done yet:
+the combined dialog with "where each value comes from", and everything below.
 Set up and remember a custom environment per project, so a project always builds and runs with
 the tools and settings chosen for it, without touching the machine-wide setup. **The details
 below are proposals; each part is confirmed with you before it is built.**
@@ -122,7 +129,7 @@ Suggested sub-steps, easiest first:
   `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed), Fedora/RHEL
   `sudo dnf install dotnet-sdk-10.0`; netcoredbg from its GitHub releases.
 - **Templates:** add C# to File > New project (`dotnet new console`, class library + tests,
-  solution with several projects), once item 1 exists.
+  solution with several projects), once the managed tools of item 1 exist.
 - Why last: it adds a whole new toolchain on three systems, and netcoredbg is unproven here.
   Check before starting: the exact SDK and package names for each system, and whether
   netcoredbg covers the needed features (breakpoints, stepping, locals) on Windows and Linux.

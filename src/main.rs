@@ -87,6 +87,9 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Run", "Enter", "In the Output window: send the typed input"),
     ("Options", "Alt+O D", "Dependencies: Up/Down, I install, C copy, G guide, R re-check, S startup check"),
     ("Options", "Alt+O E", "Settings dialog: preview place, window style, Vim, check before run, font size, dependencies"),
+    ("Options", "Alt+O G", "General environment: proxy, PATH ... for everything the IDE starts (NAME=value file)"),
+    ("Options", "Alt+O O", "Project environment: variables for this project (.rust-ide/env, overrides the general ones)"),
+    ("Options", "Alt+O X", "Show environment: the general and project variables that apply now"),
     ("Options", "Alt+O V", "Vim mode on / off"),
     ("Options", "Alt+O C", "Check the syntax before compile / run on / off"),
     ("Options", "Ctrl+= / Ctrl+- / Ctrl+0", "Editor font larger / smaller / default size (also Alt+O B / S / R)"),
@@ -403,6 +406,9 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
             let mut items = vec![
                 item("Settings...", 'e', "", Message::OpenSettings),
                 item("Dependencies...", 'd', "", Message::ShowDeps),
+                item("General environment...", 'g', "", Message::EditEnv(true)),
+                item("Project environment...", 'o', "", Message::EditEnv(false)),
+                item("Show environment", 'x', "", Message::ShowEnv),
                 item(if toggles.vim { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
                 item(
                     if toggles.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
@@ -777,6 +783,8 @@ enum Message {
     /// A settings row was used: the row, and -1 / +1 for Left / Right, 0 for Enter or a click.
     SettingsAct(usize, i8),
     OpenProject,
+    EditEnv(bool),
+    ShowEnv,
     ProjectName(String),
     ProjectFolder(String),
     /// A row of the New project dialog was clicked: the row, and -1 / +1 for Left / Right.
@@ -1048,6 +1056,33 @@ impl Ide {
                 Task::none()
             }
             Message::OpenProject => self.open_project_dialog(),
+            Message::EditEnv(general) => {
+                let made = if general {
+                    rust_ide::env::ensure_general_file()
+                } else {
+                    rust_ide::env::ensure_project_file(&self.project_dir())
+                };
+                match made {
+                    Ok(path) => {
+                        self.open_path(&path);
+                    }
+                    Err(e) => self.status = format!("Cannot create the environment file: {e}"),
+                }
+                iced::widget::operation::focus(EDITOR)
+            }
+            Message::ShowEnv => {
+                let text = rust_ide::env::describe(Some(&self.project_dir()));
+                self.open_window(Buffer::default());
+                self.content = text_editor::Content::with_text(&text);
+                self.path = None;
+                self.untitled_ext = None;
+                self.modified = false;
+                self.undo.clear();
+                self.redo.clear();
+                self.set_live(Vec::new());
+                self.status = "Environment for programs started by the IDE (listing; edit the files from Options)".into();
+                iced::widget::operation::focus(EDITOR)
+            }
             Message::ProjectName(name) => {
                 if let Some(dialog) = &mut self.project {
                     dialog.name = name;
@@ -1779,6 +1814,15 @@ impl Ide {
 
     /// Shows a file: switches to its window if it is open, otherwise opens
     /// it (in the current window when that one is blank).
+    /// The folder the project environment belongs to: the open file's, else the working folder.
+    fn project_dir(&self) -> PathBuf {
+        self.path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    }
+
     fn open_path(&mut self, path: &Path) -> bool {
         if self.is_current_file(path) {
             return true;
@@ -4833,6 +4877,21 @@ mod language_tests {
         ide.open_path(&md);
         assert_eq!((ide.lang(), ide.content.text().as_str()), (Lang::Plain, "# Title\n"));
         assert_eq!(ide.suggested_name(), "readme.md");
+    }
+
+    #[test]
+    fn environment_items_open_the_files_and_the_listing() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        let items = menu_items(Menu::Options, ide.toggles(), &[], 0);
+        assert!(items.iter().any(|i| i.label == "General environment..."));
+        send(&mut ide, [Message::EditEnv(true)]);
+        let path = ide.path.clone().expect("the general file is open");
+        assert!(path.ends_with("environment.env"), "{}", path.display());
+        assert!(ide.content.text().contains("HTTP_PROXY"));
+        send(&mut ide, [Message::ShowEnv]);
+        assert!(ide.path.is_none());
+        assert!(ide.content.text().contains("# General:") && ide.content.text().contains("# Project:"));
     }
 
     #[test]

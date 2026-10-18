@@ -370,6 +370,9 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+H / Ctrl+R", "Replace all (asks for the text, then the replacement; Ctrl+Z undoes)"),
     ("Ctrl+L", "Search again"),
     ("Options > Line numbers", "Show or hide the line numbers (remembered)"),
+    ("Options > General environment", "Edit proxy, PATH ... for everything the IDE starts (NAME=value file)"),
+    ("Options > Project environment", "Edit the variables of this project (.rust-ide/env; they override the general ones)"),
+    ("Options > Show environment", "List the variables that apply now"),
     ("Options > Check before run", "F9 / F5 look for errors first and stop if there are any (remembered)"),
     ("Mouse", "Click a menu, a menu item, a tab or a place in the text; the wheel moves the cursor (start with --no-mouse to select text with the mouse)"),
     ("Ctrl+G", "Go to line number"),
@@ -533,8 +536,12 @@ mod tests {
 
     #[test]
     fn draws_the_new_project_dialog() {
+        let _settings = crate::app::tests::isolate_settings();
         let mut app = App::new(&[]);
         app.ask_project();
+        if let crate::app::Mode::Project(dialog) = &mut app.mode {
+            dialog.lang = rust_ide::templates::Lang::Rust;
+        }
         let text = screen(&app, 90, 24);
         for expected in ["New project", "Language", "< Rust >", "Size", "Name", "Folder", "Create", "Cancel", "Creates"] {
             assert!(text.contains(expected), "missing {expected:?} in

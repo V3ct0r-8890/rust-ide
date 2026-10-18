@@ -153,6 +153,7 @@ pub fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
+    command.envs(crate::env::general());
     command
 }
 

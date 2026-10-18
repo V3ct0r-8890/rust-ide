@@ -107,6 +107,7 @@ pub fn run_external(target: &RunTarget) -> Result<(), String> {
     } else {
         platform::external_terminal(&target.program, &target.args)?
     };
+    crate::env::apply(&mut command, &target.cwd);
     command
         .current_dir(&target.cwd)
         .spawn()
@@ -124,6 +125,7 @@ pub fn spawn_captured(target: &RunTarget) -> std::io::Result<Child> {
     if is_python {
         command.arg("-u"); // unbuffered, so output appears as it is printed
     }
+    crate::env::apply(&mut command, &target.cwd);
     command
         .args(&target.args)
         .current_dir(&target.cwd)
@@ -159,7 +161,9 @@ pub fn find_cargo_manifest(file: &Path) -> Option<PathBuf> {
 fn build_cargo(manifest: &Path, check_only: bool) -> BuildResult {
     let dir = manifest.parent().unwrap_or(Path::new("."));
     let verb = if check_only { "check" } else { "build" };
-    let output = match tool("cargo")
+    let mut cargo = tool("cargo");
+    crate::env::apply(&mut cargo, dir);
+    let output = match cargo
         .args([verb, "--message-format=json"])
         .current_dir(dir)
         .output()
@@ -227,6 +231,7 @@ fn build_rustc(file: &Path, check_only: bool) -> BuildResult {
     let metadata = out_dir.join(format!("{stem}.rmeta"));
 
     let mut rustc = tool("rustc");
+    crate::env::apply(&mut rustc, &dir);
     rustc.args(["--edition", "2024", "--error-format=json"]);
     if check_only {
         // Type-check only: no machine code is generated.
@@ -295,7 +300,9 @@ fn parse_rustc_diagnostic(message: &Value, base: &Path) -> Option<Diagnostic> {
 
 fn check_python(file: &Path) -> BuildResult {
     let dir = file.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let output = match tool(platform::python())
+    let mut python = tool(platform::python());
+    crate::env::apply(&mut python, &dir);
+    let output = match python
         .args(["-c", PYTHON_CHECK])
         .arg(file)
         .current_dir(&dir)

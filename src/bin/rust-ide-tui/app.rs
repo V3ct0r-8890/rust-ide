@@ -68,6 +68,9 @@ pub enum Action {
     GoToLine,
     ToggleCheckBefore,
     ToggleLineNumbers,
+    GeneralEnv,
+    ProjectEnv,
+    ShowEnv,
     Run,
     UserScreen,
     Compile,
@@ -285,6 +288,9 @@ impl App {
                     "",
                     Action::ToggleLineNumbers,
                 ),
+                item("General environment...", 'g', "", Action::GeneralEnv),
+                item("Project environment...", 'p', "", Action::ProjectEnv),
+                item("Show environment", 's', "", Action::ShowEnv),
             ],
             Menu::Window => {
                 let mut items = vec![
@@ -493,6 +499,20 @@ impl App {
             Action::Find => self.mode = Mode::Prompt { kind: PromptKind::Find, input: self.last_query.clone() },
             Action::FindNext => self.find_next(),
             Action::Replace => self.mode = Mode::Prompt { kind: PromptKind::ReplaceFind, input: self.last_query.clone() },
+            Action::GeneralEnv => match rust_ide::env::ensure_general_file() {
+                Ok(path) => self.open(&path),
+                Err(e) => self.status = format!("Cannot create the general environment file: {e}"),
+            },
+            Action::ProjectEnv => match rust_ide::env::ensure_project_file(&self.project_dir()) {
+                Ok(path) => self.open(&path),
+                Err(e) => self.status = format!("Cannot create the project environment file: {e}"),
+            },
+            Action::ShowEnv => {
+                let text = rust_ide::env::describe(Some(&self.project_dir()));
+                self.new_window();
+                *self.buffer_mut() = Buffer::from_text(&text);
+                self.status = "Environment for programs started by the IDE (read only listing)".into();
+            }
             Action::ToggleLineNumbers => {
                 self.line_numbers = !self.line_numbers;
                 let _ = rust_ide::platform::write_setting("line_numbers", if self.line_numbers { "true" } else { "false" });
@@ -765,6 +785,16 @@ impl App {
         self.status = format!("New file ({})", filetype::untitled_name(Some(ext)));
     }
 
+    /// The folder the project environment belongs to: the open file's, else the working folder.
+    fn project_dir(&self) -> PathBuf {
+        self.buffer()
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    }
+
     fn new_window(&mut self) {
         self.windows.insert(self.active + 1, Buffer::default());
         self.active += 1;
@@ -989,7 +1019,7 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -1156,7 +1186,7 @@ mod tests {
 
     /// Keeps these tests away from the real settings file, and makes the tests that
     /// use it take turns (the settings file is shared by the whole test process).
-    fn isolate_settings() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn isolate_settings() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         static ONCE: std::sync::Once = std::sync::Once::new();
         let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1441,5 +1471,20 @@ three");
         assert!(app.menu_items(Menu::Options)[1].label.contains("[x]"));
         app.act(Action::ToggleLineNumbers);
         assert_eq!(crate::ui::editor_area(&app, screen), before);
+    }
+
+    #[test]
+    fn environment_items_open_the_files_and_the_listing() {
+        let _settings = isolate_settings();
+        let mut app = App::new(&[]);
+        assert!(app.menu_items(Menu::Options).iter().any(|i| i.label == "General environment..."));
+        app.act(Action::GeneralEnv);
+        let path = app.buffer().path.clone().expect("the general file is open");
+        assert!(path.ends_with("environment.env"), "{}", path.display());
+        assert!(app.buffer().text().contains("HTTP_PROXY"), "starts from the commented template");
+        app.act(Action::ShowEnv);
+        assert!(app.buffer().path.is_none());
+        assert!(app.buffer().text().contains("# General:"));
+        assert!(app.buffer().text().contains("# Project:"));
     }
 }

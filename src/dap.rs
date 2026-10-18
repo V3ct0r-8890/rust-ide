@@ -155,6 +155,10 @@ pub fn run(launch: Launch) -> impl Stream<Item = Event> {
             // Python (MSYSTEM is set by Git Bash / MSYS2 shells).
             command.env_remove("MSYSTEM").env_remove("PYTHONHOME").env_remove("PYTHONPATH");
         }
+        // The debugged program inherits the adapter's environment.
+        if let Some(cwd) = launch.arguments["cwd"].as_str() {
+            crate::env::apply(&mut command, std::path::Path::new(cwd));
+        }
         let spawned = command
             .args(args)
             .stdin(Stdio::piped())

@@ -3,6 +3,7 @@
 
 pub mod dap;
 pub mod deps;
+pub mod env;
 pub mod filetype;
 pub mod highlight;
 pub mod lsp;

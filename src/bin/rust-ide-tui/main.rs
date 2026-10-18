@@ -117,13 +117,13 @@ fn user_screen(terminal: &mut DefaultTerminal, target: Option<&RunTarget>, mouse
     let mut status = String::from("User screen");
     if let Some(target) = target {
         if target.gui {
-            status = match Command::new(&target.program).args(&target.args).current_dir(&target.cwd).spawn() {
+            status = match Command::new(&target.program).envs(rust_ide::env::effective(Some(&target.cwd))).args(&target.args).current_dir(&target.cwd).spawn() {
                 Ok(_) => "Running (GUI window)".into(),
                 Err(e) => format!("Cannot run: {e}"),
             };
         } else {
             println!();
-            let result = Command::new(&target.program).args(&target.args).current_dir(&target.cwd).status();
+            let result = Command::new(&target.program).envs(rust_ide::env::effective(Some(&target.cwd))).args(&target.args).current_dir(&target.cwd).status();
             status = match result {
                 Ok(exit) => match exit.code() {
                     Some(code) => format!("Program finished, exit code {code} (Alt+F5 shows its output)"),

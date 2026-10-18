@@ -110,6 +110,7 @@ like Turbo Pascal's user screen (Alt+F5 shows it again).
 
 - **Replace** (Ctrl+H, or Ctrl+R because many terminals send Ctrl+H as Backspace; Search > Replace...): asks for the text and then the replacement, replaces every match (case ignored, like Find) and Ctrl+Z undoes it in one step.
 - **Options > Check before run**: F9 / F5 first look for errors and stop if there are any (shared setting with the window version).
+- **Options > General / Project environment / Show environment**: see "Environment variables" below (same in the window version).
 - **Options > Line numbers** (Alt+O L): a column of line numbers left of the text; remembered. (The window version has no line numbers yet: its editor widget cannot show a gutter.)
 - **Mouse**: click a menu title, a menu item, a window tab or a place in the text; the wheel moves the cursor. Start with `--no-mouse` if you would rather select text with the terminal's own mouse selection.
 
@@ -120,6 +121,23 @@ rust-ide-tui hello.rs main.py
 Not in the terminal version yet: live errors and completion (language servers), the
 debugger, Vim mode and a Settings dialog (the Options menu has only Check before run so far). Set `NO_COLOR` and it shows no colors, as terminal
 programs should.
+
+## Environment variables
+
+Programs the IDE starts (builds, runs, the debugger, language servers) can get extra environment
+variables, in two groups kept apart. Both are plain text files with one `NAME=value` per line
+(`#` comments, quotes allowed; `$NAME`, `${NAME}` and `%NAME%` use existing values, so
+`PATH=C:	ools;${PATH}` adds to the path). Edits apply at the next build or run, no restart.
+
+- **General** (**Options > General environment...**, Alt+O G): for every project - proxy settings
+  (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), extra `PATH` entries, tool folders. The file is
+  `environment.env` next to the IDE's settings file; it starts with a commented template.
+- **Project** (**Options > Project environment...**, Alt+O O): for the project of the open file
+  (`.rust-ide/env` in the project folder: the Git root, else the nearest folder with a
+  `Cargo.toml`, `pyproject.toml`, `requirements.txt` or `.venv`). A project value wins over a
+  general one with the same name. If the project has a `.gitignore`, `.rust-ide/` is added to it so
+  secrets are not committed.
+- **Options > Show environment** (Alt+O X) opens a window listing both groups and where each file is.
 
 ## Vim mode
 
