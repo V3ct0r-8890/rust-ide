@@ -56,6 +56,12 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | Alt+F3 | Close the window |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
+**Window style** (window version): **Options > Window style** (Alt+O, then L / H / T) chooses how open files are
+shown: *Legacy windows* (Turbo Pascal: a frame line with the file name and the window number, windows chosen with F6,
+Alt+1-9 and the Window menu), *Horizontal tabs* (the default: a tab strip under the menu bar) or *Vertical tabs* (a list of
+the open files on the left of the editor). The tab styles appear once two or more files are open. The keys are the same
+in every style, and the choice is remembered.
+
 **Starting without a file** (no file name on the command line): the IDE asks which language to use: Rust (.rs),
 Python (.py), or, for any other language, Text (.txt) or Markdown (.md). Press R / P / T / M or 1-4 (or click), Enter takes
 the highlighted one (the one you chose last time), Esc gives a plain Rust window. **File > New** asks the same question.
@@ -115,11 +121,11 @@ To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging
 
 ## Status
 
-Done: syntax check (Alt+F9), terminal version `rust-ide-tui`, several open files (tabs, F6, Window menu), debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
+Done: window style (legacy / horizontal / vertical tabs), syntax check (Alt+F9), terminal version `rust-ide-tui`, several open files (tabs, F6, Window menu), debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
 and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
 Windows and Linux packages.
 
-Next, easiest first: window style (legacy / horizontal / vertical tabs), Markdown preview,
+Next, easiest first: Markdown preview,
 font size, more Vim commands, new-project templates (Simple / Low / Medium / Complex for Rust and
 Python), the rest of the terminal version, C# support.
 

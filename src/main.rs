@@ -84,6 +84,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Options", "Alt+O D", "Dependencies: Up/Down, I install, C copy, G guide, R re-check, S startup check"),
     ("Options", "Alt+O V", "Vim mode on / off"),
     ("Options", "Alt+O C", "Check the syntax before compile / run on / off"),
+    ("Options", "Alt+O L / H / T", "Window style: legacy windows / horizontal tabs / vertical tabs"),
     ("Help", "F1", "This list (Up/Down, Page Up/Down scroll; Esc or F1 closes)"),
     ("Vim", "i a o O, Esc", "Insert mode, back to Normal"),
     ("Vim", "h j k l w b e 0 ^ $ gg G", "Motions (with counts)"),
@@ -220,11 +221,52 @@ fn item(label: impl Into<String>, hotkey: char, keys: &'static str, message: Mes
     MenuItem { label: label.into(), hotkey, keys, message: Some(message) }
 }
 
+/// How open files (windows) are shown and chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum WindowStyle {
+    /// Turbo Pascal: a numbered title line; windows are chosen with F6, Alt+1-9
+    /// and the Window menu.
+    Legacy,
+    /// A strip of tabs under the menu bar.
+    #[default]
+    Horizontal,
+    /// A list of tabs on the left of the editor.
+    Vertical,
+}
+
+impl WindowStyle {
+    /// The value kept in the settings file.
+    fn setting(self) -> &'static str {
+        match self {
+            WindowStyle::Legacy => "legacy",
+            WindowStyle::Horizontal => "horizontal",
+            WindowStyle::Vertical => "vertical",
+        }
+    }
+
+    fn from_setting(value: Option<&str>) -> Self {
+        match value {
+            Some("legacy") => WindowStyle::Legacy,
+            Some("vertical") => WindowStyle::Vertical,
+            _ => WindowStyle::Horizontal,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            WindowStyle::Legacy => "Legacy windows",
+            WindowStyle::Horizontal => "Horizontal tabs",
+            WindowStyle::Vertical => "Vertical tabs",
+        }
+    }
+}
+
 /// Settings shown as [x] / [ ] in the Options menu.
 #[derive(Debug, Clone, Copy, Default)]
 struct Toggles {
     vim: bool,
     check_before: bool,
+    window_style: WindowStyle,
 }
 
 fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -> Vec<MenuItem> {
@@ -270,16 +312,28 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
             item("Clear breakpoints", 'l', "", Message::ClearBreakpoints),
             item("Program reset", 'r', "Ctrl+F2", Message::OutputStop),
         ],
-        Menu::Options => vec![
-            item("Dependencies...", 'd', "", Message::ShowDeps),
-            item(if toggles.vim { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
-            item(
-                if toggles.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
-                'c',
-                "",
-                Message::ToggleCheckBefore,
-            ),
-        ],
+        Menu::Options => {
+            let mut items = vec![
+                item("Dependencies...", 'd', "", Message::ShowDeps),
+                item(if toggles.vim { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
+                item(
+                    if toggles.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
+                    'c',
+                    "",
+                    Message::ToggleCheckBefore,
+                ),
+            ];
+            // How windows are shown: pick one.
+            for (style, hotkey) in [
+                (WindowStyle::Legacy, 'l'),
+                (WindowStyle::Horizontal, 'h'),
+                (WindowStyle::Vertical, 't'),
+            ] {
+                let mark = if toggles.window_style == style { "(*)" } else { "( )" };
+                items.push(item(format!("{:<19}{mark}", style.label()), hotkey, "", Message::WindowStyle(style)));
+            }
+            items
+        }
         Menu::Window => {
             const ALT_KEYS: [&str; 9] = ["Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5", "Alt+6", "Alt+7", "Alt+8", "Alt+9"];
             let mut items = vec![
@@ -439,6 +493,7 @@ struct Ide {
     /// Type (extension) chosen for the active window while it has no file name.
     untitled_ext: Option<&'static str>,
     language: Option<LanguageDialog>,
+    window_style: WindowStyle,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     /// True while consecutive typing is being collected into one undo step.
@@ -563,6 +618,7 @@ enum Message {
     ToggleCheckBefore,
     SyntaxCheck,
     NewFileType(usize),
+    WindowStyle(WindowStyle),
     OpenSearch(SearchMode),
     SearchQuery(String),
     SearchReplacement(String),
@@ -595,6 +651,7 @@ impl Ide {
         let os = Os::detect();
         ide.os = Some(os);
         ide.check_before = platform::read_setting("check_before").as_deref() == Some("true");
+        ide.window_style = WindowStyle::from_setting(platform::read_setting("window_style").as_deref());
         if platform::read_setting("vim").as_deref() == Some("true") {
             ide.vim = Some(vim::Vim::default());
         }
@@ -635,7 +692,7 @@ impl Ide {
     }
 
     fn toggles(&self) -> Toggles {
-        Toggles { vim: self.vim.is_some(), check_before: self.check_before }
+        Toggles { vim: self.vim.is_some(), check_before: self.check_before, window_style: self.window_style }
     }
 
     fn title(&self) -> String {
@@ -730,6 +787,14 @@ impl Ide {
             Message::CloseMenu => Task::none(),
             Message::New => self.ask_language(false),
             Message::NewFileType(index) => self.choose_language(index),
+            Message::WindowStyle(style) => {
+                self.window_style = style;
+                self.status = format!("Window style: {}", style.label().to_lowercase());
+                if let Err(e) = platform::write_setting("window_style", style.setting()) {
+                    self.status = format!("Cannot save settings: {e}");
+                }
+                Task::none()
+            }
             Message::Open => {
                 Task::perform(
                     rfd::AsyncFileDialog::new()
@@ -1643,6 +1708,52 @@ impl Ide {
             .into()
     }
 
+    /// Vertical tabs: the open files as a list on the left of the editor.
+    fn window_list(&self) -> Element<'_, Message> {
+        let rows = self.window_names().into_iter().enumerate().map(|(index, name)| {
+            let active = index == self.active;
+            button(
+                text(truncate(&format!("{} {name}", index + 1), 22))
+                    .color(if active { Color::BLACK } else { TURBO_DARK_GRAY }),
+            )
+            .width(Length::Fill)
+            .padding([2, 6])
+            .on_press(Message::SelectWindow(index))
+            .style(move |_, status| button::Style {
+                background: Some(Background::Color(
+                    if active || matches!(status, button::Status::Hovered) { TURBO_CYAN } else { TURBO_GRAY },
+                )),
+                ..button::Style::default()
+            })
+            .into()
+        });
+        container(scrollable(column(rows)))
+            .width(236)
+            .height(Length::Fill)
+            .style(|_| container::Style::default().background(TURBO_GRAY))
+            .into()
+    }
+
+    /// Legacy windows: Turbo Pascal's window frame line with the file name and
+    /// the window number.
+    fn legacy_title(&self) -> Element<'_, Message> {
+        let name = self.window_names()[self.active].clone();
+        let (left, right) = legacy_title_text(&name, self.active + 1, self.window_count());
+        container(
+            row![
+                text(left).color(Color::WHITE),
+                container(text("\u{2550}".repeat(300)).color(Color::WHITE).wrapping(text::Wrapping::None))
+                    .width(Length::Fill)
+                    .clip(true),
+                text(right).color(Color::WHITE),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .width(Length::Fill)
+        .style(|_| container::Style::default().background(TURBO_BLUE))
+        .into()
+    }
+
     /// Watches, locals and the call stack, shown while debugging.
     fn debug_panel(&self) -> Element<'_, Message> {
         let header = |title: &str| text(format!(" {title}")).color(Color::WHITE);
@@ -2508,13 +2619,19 @@ impl Ide {
 
         let panel = self.panel_items();
         let mut layout = column![menu_bar];
-        if self.window_count() > 1 {
-            layout = layout.push(self.window_tabs());
+        match self.window_style {
+            WindowStyle::Legacy => layout = layout.push(self.legacy_title()),
+            WindowStyle::Horizontal if self.window_count() > 1 => layout = layout.push(self.window_tabs()),
+            _ => {}
         }
         if let Some(bar) = &self.search {
             layout = layout.push(self.search_bar(bar));
         }
-        layout = layout.push(editor);
+        layout = if self.window_style == WindowStyle::Vertical && self.window_count() > 1 {
+            layout.push(row![self.window_list(), editor].height(Length::Fill))
+        } else {
+            layout.push(editor)
+        };
         if self.debug.is_some() || !self.watches.is_empty() {
             layout = layout.push(self.debug_panel());
         } else if !panel.is_empty() {
@@ -2959,6 +3076,12 @@ fn save_as_dialog(after: AfterSave, name: String, ext: String) -> Task<Message> 
 }
 
 /// The "choose a language" list.
+/// The two ends of the legacy window title line: the file name on the left
+/// and the window number on the right, joined by the frame line.
+fn legacy_title_text(name: &str, number: usize, count: usize) -> (String, String) {
+    (format!("\u{2550}\u{2550}[\u{25A0}]\u{2550}\u{2550} {name} "), format!(" {number}/{count} \u{2550}\u{2550}"))
+}
+
 fn language_dialog(dialog: &LanguageDialog) -> Element<'static, Message> {
     let rows = filetype::FILE_TYPES.iter().enumerate().map(|(index, kind)| {
         let chosen = index == dialog.selected;
@@ -3667,7 +3790,7 @@ mod syntax_check_tests {
 
     #[test]
     fn options_menu_shows_the_setting() {
-        let on = Toggles { vim: false, check_before: true };
+        let on = Toggles { check_before: true, ..Toggles::default() };
         let items = menu_items(Menu::Options, on, &[], 0);
         let item = items.iter().find(|i| i.label.starts_with("Check before run")).expect("menu item");
         assert!(item.label.ends_with("[x]") && item.hotkey == 'c');
@@ -3680,20 +3803,7 @@ mod syntax_check_tests {
 mod language_tests {
     use super::*;
 
-    /// Keeps these tests away from the real settings file, and makes the tests that
-    /// use it take turns (the settings file is shared by the whole test process).
-    fn isolate_settings() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        ONCE.call_once(|| {
-            let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("language-tests-settings.txt");
-            let _ = std::fs::remove_file(&file);
-            // SAFETY: set once, before any test here reads settings.
-            unsafe { std::env::set_var("RUST_IDE_CONFIG_FILE", file) };
-        });
-        guard
-    }
+    use crate::test_support::isolate_settings;
 
     fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
         for message in messages {
@@ -3825,5 +3935,145 @@ mod language_tests {
         let _ = language_dialog(&LanguageDialog { selected: 1, startup: true });
         let _ = language_dialog(&LanguageDialog { selected: 3, startup: false });
         assert!(SHORTCUTS.iter().any(|(_, keys, _)| keys.contains("R P T M")), "listed in the F1 help");
+    }
+}
+
+#[cfg(test)]
+mod test_support {
+    use super::*;
+
+    /// Keeps tests away from the real settings file, and makes the tests that use
+    /// it take turns (the settings file is shared by the whole test process).
+    pub fn isolate_settings() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        ONCE.call_once(|| {
+            let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("gui-tests-settings.txt");
+            let _ = std::fs::remove_file(&file);
+            // SAFETY: set once, before any test reads settings.
+            unsafe { std::env::set_var("RUST_IDE_CONFIG_FILE", file) };
+        });
+        guard
+    }
+}
+
+#[cfg(test)]
+mod window_style_tests {
+    use super::*;
+    use crate::test_support::isolate_settings;
+
+    fn ide_with_windows(count: usize) -> Ide {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("style-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut ide = Ide::default();
+        for n in 1..=count {
+            let path = dir.join(format!("window{n}.rs"));
+            std::fs::write(&path, format!("// window {n}\n")).unwrap();
+            ide.open_path(&path);
+        }
+        ide
+    }
+
+    fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
+        for message in messages {
+            let _ = ide.update(message);
+        }
+    }
+
+    #[test]
+    fn setting_values_round_trip() {
+        assert_eq!(WindowStyle::from_setting(None), WindowStyle::Horizontal, "today's look is the default");
+        assert_eq!(WindowStyle::from_setting(Some("nonsense")), WindowStyle::Horizontal);
+        for style in [WindowStyle::Legacy, WindowStyle::Horizontal, WindowStyle::Vertical] {
+            assert_eq!(WindowStyle::from_setting(Some(style.setting())), style);
+        }
+        assert_eq!(WindowStyle::Vertical.setting(), "vertical");
+    }
+
+    #[test]
+    fn choosing_a_style_applies_it_and_saves_it() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::WindowStyle(WindowStyle::Vertical)]);
+        assert_eq!(ide.window_style, WindowStyle::Vertical);
+        assert_eq!(ide.status, "Window style: vertical tabs");
+        assert_eq!(platform::read_setting("window_style").as_deref(), Some("vertical"));
+        send(&mut ide, [Message::WindowStyle(WindowStyle::Legacy)]);
+        assert_eq!(platform::read_setting("window_style").as_deref(), Some("legacy"));
+        assert_eq!(WindowStyle::from_setting(platform::read_setting("window_style").as_deref()), WindowStyle::Legacy);
+    }
+
+    #[test]
+    fn options_menu_lists_the_styles_with_radio_marks() {
+        for current in [WindowStyle::Legacy, WindowStyle::Horizontal, WindowStyle::Vertical] {
+            let toggles = Toggles { window_style: current, ..Toggles::default() };
+            let items = menu_items(Menu::Options, toggles, &[], 0);
+            let styles: Vec<_> = items
+                .iter()
+                .filter(|i| matches!(i.message, Some(Message::WindowStyle(_))))
+                .collect();
+            assert_eq!(styles.len(), 3);
+            assert_eq!(styles.iter().map(|i| i.hotkey).collect::<String>(), "lht");
+            for item in styles {
+                let Some(Message::WindowStyle(style)) = item.message else { unreachable!() };
+                assert!(item.label.starts_with(style.label()));
+                assert_eq!(item.label.ends_with("(*)"), style == current, "{}", item.label);
+            }
+        }
+        let hotkeys: Vec<char> = menu_items(Menu::Options, Toggles::default(), &[], 0).iter().map(|i| i.hotkey).collect();
+        let mut unique = hotkeys.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), hotkeys.len(), "no hotkey is used twice in the Options menu: {hotkeys:?}");
+    }
+
+    #[test]
+    fn menu_hotkeys_pick_a_style() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::OpenMenu(Menu::Options), Message::Nav(NavKey::Char('t'))]);
+        assert_eq!(ide.window_style, WindowStyle::Vertical);
+        assert!(ide.menu.is_none());
+        send(&mut ide, [Message::OpenMenu(Menu::Options), Message::Nav(NavKey::Char('l'))]);
+        assert_eq!(ide.window_style, WindowStyle::Legacy);
+        send(&mut ide, [Message::OpenMenu(Menu::Options), Message::Nav(NavKey::Char('h'))]);
+        assert_eq!(ide.window_style, WindowStyle::Horizontal);
+    }
+
+    #[test]
+    fn every_style_builds_with_one_and_with_many_windows() {
+        for style in [WindowStyle::Legacy, WindowStyle::Horizontal, WindowStyle::Vertical] {
+            for count in [1, 3] {
+                let mut ide = ide_with_windows(count);
+                ide.window_style = style;
+                let _ = ide.view();
+                let _ = ide.window_tabs();
+                let _ = ide.window_list();
+                let _ = ide.legacy_title();
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_title_shows_the_name_and_the_window_number() {
+        let (left, right) = legacy_title_text("main.rs*", 2, 3);
+        assert!(left.contains("main.rs*"), "{left}");
+        assert!(right.contains("2/3"), "{right}");
+        let ide = ide_with_windows(3);
+        assert_eq!(ide.window_names(), ["window1.rs", "window2.rs", "window3.rs"]);
+        assert_eq!(ide.active, 2);
+    }
+
+    #[test]
+    fn keys_work_the_same_in_every_style() {
+        let _settings = isolate_settings();
+        for style in [WindowStyle::Legacy, WindowStyle::Horizontal, WindowStyle::Vertical] {
+            let mut ide = ide_with_windows(3);
+            send(&mut ide, [Message::WindowStyle(style), Message::PrevWindow]);
+            assert_eq!(ide.active, 1, "{style:?}");
+            send(&mut ide, [Message::SelectWindow(0)]);
+            assert_eq!(ide.active, 0, "{style:?}");
+        }
     }
 }
