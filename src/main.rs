@@ -84,6 +84,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Run", "Ctrl+F2", "Program reset: stop the running program"),
     ("Run", "Enter", "In the Output window: send the typed input"),
     ("Options", "Alt+O D", "Dependencies: Up/Down, I install, C copy, G guide, R re-check, S startup check"),
+    ("Options", "Alt+O E", "Settings dialog: preview place, window style, Vim, check before run, font size, dependencies"),
     ("Options", "Alt+O V", "Vim mode on / off"),
     ("Options", "Alt+O C", "Check the syntax before compile / run on / off"),
     ("Options", "Ctrl+= / Ctrl+- / Ctrl+0", "Editor font larger / smaller / default size (also Alt+O B / S / R)"),
@@ -397,6 +398,7 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
         ],
         Menu::Options => {
             let mut items = vec![
+                item("Settings...", 'e', "", Message::OpenSettings),
                 item("Dependencies...", 'd', "", Message::ShowDeps),
                 item(if toggles.vim { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
                 item(
@@ -588,6 +590,7 @@ struct Ide {
     /// Type (extension) chosen for the active window while it has no file name.
     untitled_ext: Option<&'static str>,
     language: Option<LanguageDialog>,
+    settings: Option<SettingsDialog>,
     window_style: WindowStyle,
     /// Settings changes are written to the settings file (true in the real program).
     persist_settings: bool,
@@ -652,6 +655,14 @@ struct SearchBar {
     replacement: String,
     case: bool,
 }
+
+/// Options > Settings...: the main options in one dialog.
+struct SettingsDialog {
+    selected: usize,
+}
+
+/// Rows of the settings dialog (the last one closes it).
+const SETTINGS_ROWS: usize = 7;
 
 /// The "choose a language" list shown at start-up and by File > New.
 struct LanguageDialog {
@@ -737,6 +748,9 @@ enum Message {
     WindowStyle(WindowStyle),
     TogglePreview,
     CyclePreviewMode,
+    OpenSettings,
+    /// A settings row was used: the row, and -1 / +1 for Left / Right, 0 for Enter or a click.
+    SettingsAct(usize, i8),
     WindowOpened,
     WindowClosed(window::Id),
     FontLarger,
@@ -997,13 +1011,16 @@ impl Ide {
             Message::FontSmaller => self.set_font_size(self.font_size() - 1),
             Message::FontDefault => self.set_font_size(FONT_DEFAULT),
             Message::TogglePreview => self.toggle_preview(),
-            Message::CyclePreviewMode => {
-                self.preview_mode = self.preview_mode.next();
-                self.preview = false;
-                self.status = format!("Markdown preview opens {}", self.preview_mode.label());
-                self.save_setting("preview_mode", self.preview_mode.setting());
-                let close = self.preview_window.take().map_or_else(Task::none, window::close);
-                Task::batch([close, iced::widget::operation::focus(EDITOR)])
+            Message::CyclePreviewMode => self.set_preview_mode(self.preview_mode.next()),
+            Message::OpenSettings => {
+                self.settings = Some(SettingsDialog { selected: 0 });
+                Task::none()
+            }
+            Message::SettingsAct(row, dir) => {
+                if let Some(dialog) = &mut self.settings {
+                    dialog.selected = row;
+                }
+                self.settings_act(row, dir)
             }
             Message::WindowOpened => Task::none(),
             Message::WindowClosed(id) => {
@@ -1198,6 +1215,10 @@ impl Ide {
             Message::Escape => {
                 if self.language.is_some() {
                     return self.close_language_dialog();
+                }
+                if self.settings.is_some() {
+                    self.settings = None;
+                    return iced::widget::operation::focus(EDITOR);
                 }
                 if self.menu.is_some() {
                     self.menu = None;
@@ -1999,6 +2020,124 @@ impl Ide {
         }
     }
 
+    fn set_preview_mode(&mut self, mode: PreviewMode) -> Task<Message> {
+        self.preview_mode = mode;
+        self.preview = false;
+        self.status = format!("Markdown preview opens {}", mode.label());
+        self.save_setting("preview_mode", mode.setting());
+        let close = self.preview_window.take().map_or_else(Task::none, window::close);
+        Task::batch([close, iced::widget::operation::focus(EDITOR)])
+    }
+
+    // ----- Settings dialog -----
+
+    fn settings_key(&mut self, key: NavKey) -> Task<Message> {
+        let Some(dialog) = &mut self.settings else { return Task::none() };
+        let row = dialog.selected;
+        match key {
+            NavKey::Up => dialog.selected = (row + SETTINGS_ROWS - 1) % SETTINGS_ROWS,
+            NavKey::Down | NavKey::Tab => dialog.selected = (row + 1) % SETTINGS_ROWS,
+            NavKey::Home => dialog.selected = 0,
+            NavKey::End => dialog.selected = SETTINGS_ROWS - 1,
+            NavKey::Left => return self.settings_act(row, -1),
+            NavKey::Right => return self.settings_act(row, 1),
+            NavKey::Enter | NavKey::Char(' ') => return self.settings_act(row, 0),
+            NavKey::Char(c) => {
+                if let Some(index) = ['p', 'w', 'v', 'c', 'f', 'd'].iter().position(|&k| k == c) {
+                    dialog.selected = index;
+                    return self.settings_act(index, 0);
+                }
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
+    /// Changes the setting of a row: `dir` is -1 / +1 (Left / Right) or 0 (Enter, click).
+    fn settings_act(&mut self, row: usize, dir: i8) -> Task<Message> {
+        match row {
+            0 => {
+                let mode = if dir < 0 { self.preview_mode.next().next() } else { self.preview_mode.next() };
+                self.set_preview_mode(mode)
+            }
+            1 => {
+                let next = match self.window_style {
+                    WindowStyle::Legacy => WindowStyle::Horizontal,
+                    WindowStyle::Horizontal => WindowStyle::Vertical,
+                    WindowStyle::Vertical => WindowStyle::Legacy,
+                };
+                let style = if dir < 0 {
+                    match self.window_style {
+                        WindowStyle::Legacy => WindowStyle::Vertical,
+                        WindowStyle::Horizontal => WindowStyle::Legacy,
+                        WindowStyle::Vertical => WindowStyle::Horizontal,
+                    }
+                } else {
+                    next
+                };
+                self.update(Message::WindowStyle(style))
+            }
+            2 => self.update(Message::ToggleVim),
+            3 => self.update(Message::ToggleCheckBefore),
+            4 => self.update(if dir < 0 { Message::FontSmaller } else { Message::FontLarger }),
+            5 => {
+                self.settings = None;
+                self.update(Message::ShowDeps)
+            }
+            _ => {
+                self.settings = None;
+                iced::widget::operation::focus(EDITOR)
+            }
+        }
+    }
+
+    fn settings_dialog(&self, dialog: &SettingsDialog) -> Element<'static, Message> {
+        let on = |flag: bool| if flag { "[x]" } else { "[ ]" }.to_string();
+        let rows: [(&str, char, String); SETTINGS_ROWS] = [
+            ("Markdown preview opens", 'p', self.preview_mode.label().to_string()),
+            ("Window style", 'w', self.window_style.label().to_string()),
+            ("Vim mode", 'v', on(self.vim.is_some())),
+            ("Check before run", 'c', on(self.check_before)),
+            ("Font size", 'f', format!("< {} >", self.font_size())),
+            ("Dependencies...", 'd', String::new()),
+            ("Close", '\0', "Esc".to_string()),
+        ];
+        let entries = rows.into_iter().enumerate().map(|(index, (label, hotkey, value))| {
+            let chosen = index == dialog.selected;
+            button(row![
+                hotkey_label(label, hotkey),
+                Space::new().width(Length::Fill),
+                text(value).color(Color::BLACK),
+            ])
+            .width(Length::Fill)
+            .padding([3, 10])
+            .on_press(Message::SettingsAct(index, if index == 4 { 1 } else { 0 }))
+            .style(move |_, status| button::Style {
+                background: Some(Background::Color(
+                    if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
+                )),
+                ..button::Style::default()
+            })
+            .into()
+        });
+        let body = column![
+            container(text(" Settings ").color(Color::WHITE))
+                .width(Length::Fill)
+                .padding(2)
+                .style(|_| container::Style::default().background(TURBO_BLUE)),
+            column(entries).padding(8),
+            container(text(" Up/Down  Left/Right or Enter changes  P W V C F D  Esc closes").color(Color::BLACK).size(13))
+                .padding(10),
+        ];
+        opaque(
+            container(container(body).width(560).style(|_| container::Style {
+                border: iced::Border::default().color(Color::BLACK).width(1),
+                ..container::Style::default().background(TURBO_GRAY)
+            }))
+            .center(Length::Fill),
+        )
+    }
+
     /// Alt+F6: shows or hides the preview where the Options say.
     fn toggle_preview(&mut self) -> Task<Message> {
         let focus = iced::widget::operation::focus(EDITOR);
@@ -2254,6 +2393,9 @@ impl Ide {
     fn navigate(&mut self, key: NavKey) -> Task<Message> {
         if self.language.is_some() {
             return self.language_key(key);
+        }
+        if self.settings.is_some() {
+            return self.settings_key(key);
         }
         if let Some(menu) = self.menu {
             return self.menu_key(menu, key);
@@ -3001,7 +3143,11 @@ impl Ide {
 
         let popup_open = self.completion.is_some();
         // While a menu, dialog or the help screen is open, keys drive it, not the text.
-        let modal = self.menu.is_some() || self.help || self.deps.is_some() || self.language.is_some();
+        let modal = self.menu.is_some()
+            || self.help
+            || self.deps.is_some()
+            || self.language.is_some()
+            || self.settings.is_some();
         let vim_mode = self.vim.as_ref().map(|v| (v.mode, v.command.is_some()));
         let editor = text_editor(&self.content)
             .id(EDITOR)
@@ -3096,6 +3242,9 @@ impl Ide {
         }
         if let Some(dialog) = &self.language {
             layers = layers.push(language_dialog(dialog));
+        }
+        if let Some(dialog) = &self.settings {
+            layers = layers.push(self.settings_dialog(dialog));
         }
         if self.help {
             layers = layers.push(help_screen());
@@ -4959,5 +5108,92 @@ mod preview_place_tests {
         assert_eq!(ide.preview_mode, PreviewMode::Side);
         assert!(ide.preview_window.is_none());
         assert!(!ide.preview);
+    }
+}
+
+#[cfg(test)]
+mod settings_dialog_tests {
+    use super::*;
+    use crate::test_support::isolate_settings;
+
+    fn send(ide: &mut Ide, messages: impl IntoIterator<Item = Message>) {
+        for message in messages {
+            let _ = ide.update(message);
+        }
+    }
+
+    fn keys(ide: &mut Ide, keys: impl IntoIterator<Item = NavKey>) {
+        for key in keys {
+            let _ = ide.update(Message::Nav(key));
+        }
+    }
+
+    #[test]
+    fn the_dialog_opens_from_the_options_menu_and_closes_with_escape() {
+        let mut ide = Ide::default();
+        let items = menu_items(Menu::Options, ide.toggles(), &[], 0);
+        assert_eq!(items[0].label, "Settings...");
+        send(&mut ide, [Message::OpenSettings]);
+        assert!(ide.settings.is_some());
+        let _ = ide.view(window::Id::unique());
+        send(&mut ide, [Message::Escape]);
+        assert!(ide.settings.is_none());
+    }
+
+    #[test]
+    fn rows_change_the_settings_with_the_keys() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        ide.persist_settings = true;
+        send(&mut ide, [Message::OpenSettings]);
+
+        // Row 0: where the preview opens.
+        keys(&mut ide, [NavKey::Right]);
+        assert_eq!(ide.preview_mode, PreviewMode::Tab);
+        keys(&mut ide, [NavKey::Left, NavKey::Left]);
+        assert_eq!(ide.preview_mode, PreviewMode::Window);
+
+        // Row 1: window style (Horizontal is the default).
+        keys(&mut ide, [NavKey::Down, NavKey::Right]);
+        assert_eq!(ide.window_style, WindowStyle::Vertical);
+        keys(&mut ide, [NavKey::Left]);
+        assert_eq!(ide.window_style, WindowStyle::Horizontal);
+
+        // Rows 2 and 3: toggles.
+        keys(&mut ide, [NavKey::Down, NavKey::Enter]);
+        assert!(ide.vim.is_some());
+        keys(&mut ide, [NavKey::Down, NavKey::Char(' ')]);
+        assert!(ide.check_before);
+
+        // Row 4: font size.
+        let before = ide.font_size();
+        keys(&mut ide, [NavKey::Down, NavKey::Right]);
+        assert_eq!(ide.font_size(), before + 1);
+        keys(&mut ide, [NavKey::Left, NavKey::Left]);
+        assert_eq!(ide.font_size(), before - 1);
+        assert_eq!(platform::read_setting("preview_mode").as_deref(), Some("window"));
+        assert_eq!(platform::read_setting("vim").as_deref(), Some("true"));
+
+        // Row 5 opens the dependencies check and leaves the dialog; the last row closes it.
+        keys(&mut ide, [NavKey::Down, NavKey::Enter]);
+        assert!(ide.settings.is_none());
+        send(&mut ide, [Message::OpenSettings]);
+        keys(&mut ide, [NavKey::End, NavKey::Enter]);
+        assert!(ide.settings.is_none());
+    }
+
+    #[test]
+    fn letters_and_clicks_use_a_row_and_keys_do_not_leak_to_the_editor() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::OpenSettings]);
+        keys(&mut ide, [NavKey::Char('v')]);
+        assert!(ide.vim.is_some());
+        send(&mut ide, [Message::SettingsAct(3, 0)]);
+        assert!(ide.check_before);
+        assert_eq!(ide.settings.as_ref().map(|d| d.selected), Some(3));
+        keys(&mut ide, [NavKey::Char('x')]);
+        assert_eq!(ide.content.text(), "");
+        let _ = ide.view(window::Id::unique());
     }
 }

@@ -69,6 +69,8 @@ rendered document next to the editor: headings, bold and italic, lists, quotes, 
 what you type and scrolls with the cursor; clicking a link opens web addresses in the browser and other `.md` / text files
 in a window. Images show only their description for now.
 
+**Settings dialog** (window version): **Options > Settings...** (Alt+O E) has the main options in one place: where the Markdown preview opens, window style, Vim mode, check before run, font size and the dependencies check. Up/Down choose a row, Left/Right or Enter change it, a letter (P W V C F D) uses that row, Esc closes; each change is applied and remembered at once. The menu items and keys below still work.
+
 **Where the preview opens** is chosen in **Options > Preview in** (Alt+O P cycles it; remembered):
 - *side by side* (default): next to the editor;
 - *a new tab*: Alt+F6 opens a `Preview name.md` tab after the file. It shows the text as it was when you selected the tab, and is read again each time you come back to it. Alt+F6 on the preview tab closes it and returns to the file; on the file it jumps to the open preview tab. The preview tab cannot be edited or saved;
