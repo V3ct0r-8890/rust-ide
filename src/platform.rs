@@ -154,13 +154,15 @@ pub fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     command.envs(crate::env::general());
+    command.envs(crate::managed::env_for(Path::new(command.get_program())));
     command
 }
 
 /// Directories searched for tools: PATH plus the usual per-user install
 /// locations that are often missing from a GUI app's PATH.
 pub fn search_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
+    // Tools the IDE downloaded for itself win over the system's.
+    let mut dirs = crate::managed::bin_dirs();
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }

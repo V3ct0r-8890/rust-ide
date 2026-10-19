@@ -55,6 +55,10 @@ python -m pip install --user basedpyright debugpy
 
 gdb comes with the MinGW-w64 (WinLibs) package above.
 
+Don't want to install Python or Rust yourself? Options > Dependencies has "Managed Python" and
+"Managed Rust" rows that download the IDE's own copies (needs `curl` and `tar`, both built into
+Windows 10+); the IDE uses them before the ones on PATH.
+
 netcoredbg (C# debugger, optional): download `netcoredbg-win64.zip` from
 https://github.com/Samsung/netcoredbg/releases, unzip it and put the folder on PATH.
 

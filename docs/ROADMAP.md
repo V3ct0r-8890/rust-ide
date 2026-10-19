@@ -86,6 +86,14 @@ below are proposals; each part is confirmed with you before it is built.**
   fetched too), and Python as a relocatable build (python-build-standalone, which includes `pip`
   and `venv`; the python.org embeddable zip has neither). The Dependencies dialog already installs
   user-level tools and would be extended to do this.
+  **Done in 0.2.25 (Python and Rust):** two opt-in rows in Options > Dependencies, "Managed Python"
+  (python-build-standalone 3.13, checksum from the release's `SHA256SUMS`) and "Managed Rust"
+  (`rustup-init` with the stable minimal profile + rust-analyzer, GNU host on Windows, checksum from
+  its `.sha256`), installed with `curl` and `tar` under `%LOCALAPPDATA%\rust-ide\tools` (Linux
+  `~/.local/share/rust-ide/tools`; `RUST_IDE_TOOLS` overrides). Managed tools are found before PATH
+  and get `CARGO_HOME` / `RUSTUP_HOME` automatically. Not yet: updating them, removing them, the
+  MinGW gcc for Windows, .NET and the other helper tools. Managed Rust has not been installed end to
+  end (about 300 MB); managed Python has (`cargo test python_installs -- --ignored`).
 - **Sessions:** the open windows, cursor positions, window style and the project's environment are
   saved when the IDE closes and restored next time (per project folder).
 - **Both front ends** read the same environment file; the window version gets the dialog first.

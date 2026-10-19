@@ -7,6 +7,7 @@ pub mod env;
 pub mod filetype;
 pub mod highlight;
 pub mod lsp;
+pub mod managed;
 pub mod output;
 pub mod platform;
 pub mod runner;

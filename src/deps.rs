@@ -138,6 +138,23 @@ pub fn check(os: Os) -> Vec<Dep> {
         auto: has_dotnet.then(|| words("dotnet tool install -g csharp-ls")),
     });
 
+    deps.push(Dep {
+        name: "Managed Python",
+        purpose: "the IDE's own Python 3.13 (python-build-standalone, about 50 MB, used before the system's)",
+        need: Need::Optional,
+        found: crate::managed::python_exe().map(|p| p.display().to_string()),
+        install: "downloads from github.com/astral-sh/python-build-standalone into the IDE's data folder".into(),
+        auto: Some(words("rust-ide:managed python")),
+    });
+    deps.push(Dep {
+        name: "Managed Rust",
+        purpose: "the IDE's own Rust (rustup, stable, minimal, about 300 MB; Windows still needs MinGW gcc)",
+        need: Need::Optional,
+        found: crate::managed::cargo_exe().map(|p| p.display().to_string()),
+        install: "downloads rustup-init from static.rust-lang.org into the IDE's data folder".into(),
+        auto: Some(words("rust-ide:managed rust")),
+    });
+
     let has_rustup = platform::find_program("rustup").is_some();
     deps.push(Dep {
         name: "rust-analyzer",
@@ -249,6 +266,9 @@ pub fn check(os: Os) -> Vec<Dep> {
 
 /// Runs a dependency's `auto` install command; returns its last output line.
 pub fn install(command: &[String]) -> Result<String, String> {
+    if command.first().map(String::as_str) == Some(crate::managed::COMMAND) {
+        return crate::managed::run(command);
+    }
     let (program, args) = command.split_first().ok_or("empty command")?;
     let path = platform::find_program(program).unwrap_or_else(|| program.into());
     let output = platform::hidden_command(path)
