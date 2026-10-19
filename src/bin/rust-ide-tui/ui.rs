@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use rust_ide::filetype;
 use rust_ide::highlight::{Highlight, LineHighlighter};
 
-use crate::app::{
+use crate::app::{Action,
     App, MENUS, Menu, Mode, PROJECT_CREATE, PROJECT_FOLDER, PROJECT_LANG, PROJECT_NAME, PROJECT_SIZE, ProjectDialog, PromptKind,
 };
 
@@ -79,6 +79,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Language { selected, startup } => draw_language(frame, *selected, *startup),
         Mode::Toolchains { choices, selected } => draw_toolchains(frame, choices, *selected),
         Mode::Project(dialog) => draw_project(frame, dialog),
+        Mode::Unsaved { action, button } => draw_unsaved(frame, app, action, *button),
     }
 }
 
@@ -366,7 +367,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("F3 / Ctrl+O", "Open a file (each in its own window)"),
     ("File > New", "Asks for the language: R Rust, P Python, C C#, T Text, M Markdown (or 1-5)"),
     ("File > New project", "Rust or Python, size Simple/Low/Medium/Complex, a name and a folder (Tab moves, Enter creates)"),
-    ("Alt+X / Ctrl+Q", "Exit (press twice to discard changes)"),
+    ("Alt+X / Ctrl+Q", "Exit (asks to save or discard changes)"),
     ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
     ("Tab / Shift+Tab", "Indent / unindent"),
     ("Ctrl+Left/Right", "Previous / next word"),
@@ -505,6 +506,34 @@ fn draw_toolchains(frame: &mut Frame, choices: &[rust_ide::env::ToolchainChoice]
     frame.render_widget(Paragraph::new(lines).style(BAR), inner);
 }
 
+fn draw_unsaved(frame: &mut Frame, app: &App, action: &Action, button: usize) {
+    let area = centered(frame.area(), 52, 8);
+    frame.render_widget(Clear, area);
+    let block = dialog("Unsaved changes");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let unsaved = app.windows.iter().filter(|w| w.modified).count();
+    let (what, ask) = match action {
+        Action::Exit if unsaved > 1 => (format!("{unsaved} windows have unsaved changes (Save keeps only this one)."), "Save before exiting?"),
+        Action::Exit => ("A window has unsaved changes.".to_string(), "Save before exiting?"),
+        _ => ("This window has unsaved changes.".to_string(), "Save before closing?"),
+    };
+    let mut buttons = vec![Span::raw(" ")];
+    for (index, label) in ["Save", "Discard", "Cancel"].iter().enumerate() {
+        buttons.push(Span::styled(format!(" {label} "), if index == button { CHOSEN } else { BAR }));
+        buttons.push(Span::raw("  "));
+    }
+    let lines = vec![
+        Line::from(format!(" {what}")),
+        Line::from(format!(" {ask}")),
+        Line::from(""),
+        Line::from(buttons),
+        Line::from(""),
+        Line::from(" S save  D discard  C/Esc cancel  Tab/Enter choose"),
+    ];
+    frame.render_widget(Paragraph::new(lines).style(BAR), inner);
+}
+
 fn draw_help(frame: &mut Frame, scroll: usize) {
     let area = centered(frame.area(), 76, 22);
     frame.render_widget(Clear, area);
@@ -579,6 +608,16 @@ mod tests {
         for expected in ["New project", "Language", "< Rust >", "Size", "Name", "Folder", "Create", "Cancel", "Creates"] {
             assert!(text.contains(expected), "missing {expected:?} in
 {text}");
+        }
+    }
+
+    #[test]
+    fn draws_the_unsaved_changes_dialog() {
+        let mut app = App::new(&[]);
+        app.mode = crate::app::Mode::Unsaved { action: Action::CloseWindow, button: 1 };
+        let text = screen(&app, 90, 24);
+        for expected in ["Unsaved changes", "Save before closing?", "Save", "Discard", "Cancel"] {
+            assert!(text.contains(expected), "missing {expected:?} in {text}");
         }
     }
 

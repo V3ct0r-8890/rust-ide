@@ -140,6 +140,8 @@ pub enum Mode {
     /// Options > Rust toolchain: the installed toolchains to pick from (the row
     /// after the last one asks for a name).
     Toolchains { choices: Vec<rust_ide::env::ToolchainChoice>, selected: usize },
+    /// Close or exit with unsaved changes: Save / Discard / Cancel (`button` is the one Tab is on).
+    Unsaved { action: Action, button: usize },
 }
 
 pub const PROJECT_LANG: usize = 0;
@@ -218,8 +220,6 @@ pub struct App {
     pub remember_dir: bool,
     /// After a check that finds no errors: build (and run when true).
     then_build: Option<bool>,
-    /// A pending "press again to discard" for this action.
-    confirm: Option<Action>,
     /// Program shown on the user screen (for its title).
     pub last_run: Option<String>,
 }
@@ -239,7 +239,6 @@ impl App {
             line_numbers: false,
             remember_dir: false,
             then_build: None,
-            confirm: None,
             last_run: None,
         };
         for file in files {
@@ -384,6 +383,7 @@ impl App {
             Mode::Language { .. } => self.language_key(key),
             Mode::Project(_) => self.project_key(key),
             Mode::Toolchains { .. } => self.toolchain_key(key),
+            Mode::Unsaved { .. } => self.unsaved_key(key),
             Mode::Help { scroll } => {
                 match key.code {
                     KeyCode::Up => *scroll = scroll.saturating_sub(1),
@@ -401,9 +401,6 @@ impl App {
     fn edit_key(&mut self, key: KeyEvent) -> Effect {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
-        if !matches!(key.code, KeyCode::F(_)) {
-            self.confirm = None;
-        }
         let b = self.buffer_mut();
         match key.code {
             KeyCode::Char(c) if !ctrl && !alt || ctrl && alt => b.insert_char(c),
@@ -427,6 +424,61 @@ impl App {
             _ => {}
         }
         Effect::None
+    }
+
+    fn unsaved_key(&mut self, key: KeyEvent) -> Effect {
+        let Mode::Unsaved { action, button } = &mut self.mode else { return Effect::None };
+        let choice = match key.code {
+            KeyCode::Left | KeyCode::Up | KeyCode::BackTab => {
+                *button = (*button + 2) % 3;
+                return Effect::None;
+            }
+            KeyCode::Right | KeyCode::Down | KeyCode::Tab => {
+                *button = (*button + 1) % 3;
+                return Effect::None;
+            }
+            KeyCode::Enter => *button,
+            KeyCode::Esc => 2,
+            KeyCode::Char(c) => match c.to_ascii_lowercase() {
+                's' => 0,
+                'd' => 1,
+                'c' => 2,
+                _ => return Effect::None,
+            },
+            _ => return Effect::None,
+        };
+        let action = action.clone();
+        self.mode = Mode::Edit;
+        self.unsaved_choice(action, choice)
+    }
+
+    /// Answers the unsaved-changes dialog: 0 save, 1 discard, 2 cancel.
+    pub fn unsaved_choice(&mut self, action: Action, choice: usize) -> Effect {
+        match choice {
+            2 => self.status = "Cancelled".into(),
+            0 => {
+                if self.buffer().modified {
+                    self.save();
+                    // No file name yet (a prompt opened) or the save failed: stay.
+                    if self.buffer().modified {
+                        return Effect::None;
+                    }
+                }
+                return self.finish_discard(action);
+            }
+            _ => return self.finish_discard(action),
+        }
+        Effect::None
+    }
+
+    fn finish_discard(&mut self, action: Action) -> Effect {
+        match action {
+            Action::Exit => Effect::Quit,
+            _ => {
+                self.close_window();
+                Effect::None
+            }
+        }
     }
 
     fn menu_key(&mut self, key: KeyEvent) -> Effect {
@@ -518,7 +570,6 @@ impl App {
     // ----- Actions -----
 
     pub fn act(&mut self, action: Action) -> Effect {
-        let confirmed = self.confirm.take() == Some(action.clone());
         match action {
             Action::New => self.ask_language(false),
             Action::NewProject => self.ask_project(),
@@ -540,11 +591,10 @@ impl App {
             }
             Action::Exit => {
                 let unsaved = self.windows.iter().filter(|w| w.modified).count();
-                if unsaved == 0 || confirmed {
+                if unsaved == 0 {
                     return Effect::Quit;
                 }
-                self.status = format!("{unsaved} window(s) have unsaved changes! F2 saves, Alt+X again quits.");
-                self.confirm = Some(Action::Exit);
+                self.mode = Mode::Unsaved { action: Action::Exit, button: 0 };
             }
             Action::Undo => {
                 if !self.buffer_mut().undo() {
@@ -632,9 +682,8 @@ impl App {
             Action::PrevWindow => self.select((self.active + self.windows.len() - 1) % self.windows.len()),
             Action::SelectWindow(index) => self.select(index),
             Action::CloseWindow => {
-                if self.buffer().modified && !confirmed {
-                    self.status = "Unsaved changes! F2 saves, Alt+F3 again closes.".into();
-                    self.confirm = Some(Action::CloseWindow);
+                if self.buffer().modified {
+                    self.mode = Mode::Unsaved { action: Action::CloseWindow, button: 0 };
                 } else {
                     self.close_window();
                 }
@@ -1219,19 +1268,25 @@ pub(crate) mod tests {
         assert_eq!(app.active, 1);
         typed(&mut app, "x");
         app.handle(with(KeyCode::F(3), KeyModifiers::ALT));
-        assert_eq!(app.windows.len(), 2, "unsaved: the first Alt+F3 warns");
+        assert_eq!(app.windows.len(), 2, "unsaved: Alt+F3 asks");
+        assert!(matches!(app.mode, Mode::Unsaved { .. }));
+        app.handle(key(KeyCode::Esc));
+        assert_eq!(app.windows.len(), 2, "Cancel keeps the window");
         app.handle(with(KeyCode::F(3), KeyModifiers::ALT));
+        typed(&mut app, "d");
         assert_eq!(app.windows.len(), 1);
         app.open(&files[0]);
         assert_eq!(app.windows.len(), 1, "an open file is not opened twice");
     }
 
     #[test]
-    fn exit_asks_twice_with_unsaved_changes() {
+    fn exit_asks_with_a_dialog_for_unsaved_changes() {
         let mut app = App::new(&[]);
         typed(&mut app, "x");
         assert_eq!(app.handle(with(KeyCode::Char('x'), KeyModifiers::ALT)), Effect::None);
-        assert_eq!(app.handle(with(KeyCode::Char('x'), KeyModifiers::ALT)), Effect::Quit);
+        assert!(matches!(app.mode, Mode::Unsaved { .. }));
+        assert_eq!(app.handle(key(KeyCode::Tab)), Effect::None);
+        assert_eq!(app.handle(key(KeyCode::Enter)), Effect::Quit, "Tab moved to Discard");
     }
 
     #[test]
