@@ -86,7 +86,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Run", "Ctrl+F2", "Program reset: stop the running program"),
     ("Run", "Enter", "In the Output window: send the typed input"),
     ("Options", "Alt+O D", "Dependencies: Up/Down, I install, C copy, G guide, R re-check, S startup check"),
-    ("Options", "Alt+O E", "Settings dialog: preview place, window style, Vim, check before run, font size, dependencies"),
+    ("Options", "Alt+O E", "Settings dialog: preview place, window style, Vim, check before run, line numbers, font size, dependencies"),
     ("Options", "Alt+O G", "General environment: proxy, PATH ... for everything the IDE starts (NAME=value file)"),
     ("Options", "Alt+O O", "Project environment: variables for this project (.rust-ide/env, overrides the general ones)"),
     ("Options", "Alt+O X", "Show environment: the general and project variables that apply now"),
@@ -350,6 +350,7 @@ struct PreviewTab {
 struct Toggles {
     vim: bool,
     check_before: bool,
+    line_numbers: bool,
     window_style: WindowStyle,
     preview: bool,
     preview_mode: PreviewMode,
@@ -421,6 +422,12 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
                     Message::ToggleCheckBefore,
                 ),
             ];
+            items.push(item(
+                if toggles.line_numbers { "Line numbers       [x]" } else { "Line numbers       [ ]" },
+                'n',
+                "",
+                Message::ToggleLineNumbers,
+            ));
             items.push(item("Font larger", 'b', "Ctrl+=", Message::FontLarger));
             items.push(item("Font smaller", 's', "Ctrl+-", Message::FontSmaller));
             items.push(item("Font default", 'r', "Ctrl+0", Message::FontDefault));
@@ -600,6 +607,8 @@ struct Ide {
     vim: Option<vim::Vim>,
     /// Run the syntax check first for compile and run; stop on errors.
     check_before: bool,
+    /// Line numbers in a column left of the editor.
+    line_numbers: bool,
     /// Type (extension) chosen for the active window while it has no file name.
     untitled_ext: Option<&'static str>,
     language: Option<LanguageDialog>,
@@ -686,7 +695,7 @@ struct SettingsDialog {
 }
 
 /// Rows of the settings dialog (the last one closes it).
-const SETTINGS_ROWS: usize = 7;
+const SETTINGS_ROWS: usize = 8;
 
 /// File > New project...: language, size, name and folder of a template project.
 struct ProjectDialog {
@@ -788,6 +797,7 @@ enum Message {
     Redo,
     ToggleVim,
     ToggleCheckBefore,
+    ToggleLineNumbers,
     SyntaxCheck,
     NewFileType(usize),
     WindowStyle(WindowStyle),
@@ -850,6 +860,7 @@ impl Ide {
         let os = Os::detect();
         ide.os = Some(os);
         ide.check_before = platform::read_setting("check_before").as_deref() == Some("true");
+        ide.line_numbers = platform::read_setting("line_numbers").as_deref() == Some("true");
         ide.window_style = WindowStyle::from_setting(platform::read_setting("window_style").as_deref());
         ide.font_points = platform::read_setting("font_size")
             .and_then(|v| v.trim().parse::<i16>().ok())
@@ -936,6 +947,7 @@ impl Ide {
         Toggles {
             vim: self.vim.is_some(),
             check_before: self.check_before,
+            line_numbers: self.line_numbers,
             window_style: self.window_style,
             preview: self.preview_shown(),
             preview_mode: self.preview_mode,
@@ -1361,6 +1373,12 @@ impl Ide {
                 let on = self.check_before;
                 self.status = format!("Check before compile/run {}", if on { "on" } else { "off" });
                 self.save_setting("check_before", if on { "true" } else { "false" });
+                Task::none()
+            }
+            Message::ToggleLineNumbers => {
+                self.line_numbers = !self.line_numbers;
+                self.status = format!("Line numbers {}", if self.line_numbers { "on" } else { "off" });
+                self.save_setting("line_numbers", if self.line_numbers { "true" } else { "false" });
                 Task::none()
             }
             Message::ToggleVim => {
@@ -2415,7 +2433,7 @@ impl Ide {
             NavKey::Right => return self.settings_act(row, 1),
             NavKey::Enter | NavKey::Char(' ') => return self.settings_act(row, 0),
             NavKey::Char(c) => {
-                if let Some(index) = ['p', 'w', 'v', 'c', 'f', 'd'].iter().position(|&k| k == c) {
+                if let Some(index) = ['p', 'w', 'v', 'c', 'n', 'f', 'd'].iter().position(|&k| k == c) {
                     dialog.selected = index;
                     return self.settings_act(index, 0);
                 }
@@ -2469,8 +2487,9 @@ impl Ide {
             }
             2 => self.update(Message::ToggleVim),
             3 => self.update(Message::ToggleCheckBefore),
-            4 => self.update(if dir < 0 { Message::FontSmaller } else { Message::FontLarger }),
-            5 => {
+            4 => self.update(Message::ToggleLineNumbers),
+            5 => self.update(if dir < 0 { Message::FontSmaller } else { Message::FontLarger }),
+            6 => {
                 self.settings = None;
                 self.update(Message::ShowDeps)
             }
@@ -2488,6 +2507,7 @@ impl Ide {
             ("Window style", 'w', self.window_style.label().to_string()),
             ("Vim mode", 'v', on(self.vim.is_some())),
             ("Check before run", 'c', on(self.check_before)),
+            ("Line numbers", 'n', on(self.line_numbers)),
             ("Font size", 'f', format!("< {} >", self.font_size())),
             ("Dependencies...", 'd', String::new()),
             ("Close", '\0', "Esc".to_string()),
@@ -2501,7 +2521,7 @@ impl Ide {
             ])
             .width(Length::Fill)
             .padding([3, 10])
-            .on_press(Message::SettingsAct(index, if index == 4 { 1 } else { 0 }))
+            .on_press(Message::SettingsAct(index, if index == 5 { 1 } else { 0 }))
             .style(move |_, status| button::Style {
                 background: Some(Background::Color(
                     if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
@@ -3605,7 +3625,13 @@ impl Ide {
                 ..text_editor::default(theme, status)
             });
 
-        let editor = cursor::BlockCursor::new(editor, &self.content, TURBO_YELLOW, TURBO_BLUE, self.font_size() as f32);
+        let gutter = self.line_numbers.then_some(cursor::Gutter {
+            background: Color::from_rgb(0.0, 0.0, 0.5),
+            number: TURBO_CYAN,
+            current: TURBO_YELLOW,
+        });
+        let editor = cursor::BlockCursor::new(editor, &self.content, TURBO_YELLOW, TURBO_BLUE, self.font_size() as f32)
+            .line_numbers(gutter);
 
         let panel = self.panel_items();
         let mut layout = column![menu_bar];
@@ -5825,7 +5851,12 @@ mod settings_dialog_tests {
         keys(&mut ide, [NavKey::Down, NavKey::Char(' ')]);
         assert!(ide.check_before);
 
-        // Row 4: font size.
+        // Row 4: line numbers.
+        keys(&mut ide, [NavKey::Down, NavKey::Enter]);
+        assert!(ide.line_numbers);
+        assert_eq!(platform::read_setting("line_numbers").as_deref(), Some("true"));
+
+        // Row 5: font size.
         let before = ide.font_size();
         keys(&mut ide, [NavKey::Down, NavKey::Right]);
         assert_eq!(ide.font_size(), before + 1);
@@ -5834,12 +5865,37 @@ mod settings_dialog_tests {
         assert_eq!(platform::read_setting("preview_mode").as_deref(), Some("window"));
         assert_eq!(platform::read_setting("vim").as_deref(), Some("true"));
 
-        // Row 5 opens the dependencies check and leaves the dialog; the last row closes it.
+        // Row 6 opens the dependencies check and leaves the dialog; the last row closes it.
         keys(&mut ide, [NavKey::Down, NavKey::Enter]);
         assert!(ide.settings.is_none());
         send(&mut ide, [Message::OpenSettings]);
         keys(&mut ide, [NavKey::End, NavKey::Enter]);
         assert!(ide.settings.is_none());
+    }
+
+    #[test]
+    fn line_numbers_have_a_menu_item_a_setting_and_a_view() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        let label = |ide: &Ide| {
+            menu_items(Menu::Options, ide.toggles(), &[], 0)
+                .into_iter()
+                .map(|i| i.label.to_string())
+                .find(|l| l.starts_with("Line numbers"))
+                .expect("menu item")
+        };
+        assert!(label(&ide).ends_with("[ ]"));
+        let _ = ide.view(window::Id::unique());
+        ide.persist_settings = true;
+        let _ = ide.update(Message::ToggleLineNumbers);
+        assert!(ide.line_numbers);
+        assert!(label(&ide).ends_with("[x]"));
+        assert_eq!(platform::read_setting("line_numbers").as_deref(), Some("true"));
+        ide.content = text_editor::Content::with_text("one\nTwo\nthree\n");
+        let _ = ide.view(window::Id::unique());
+        let _ = ide.update(Message::ToggleLineNumbers);
+        assert!(!ide.line_numbers);
+        assert_eq!(platform::read_setting("line_numbers").as_deref(), Some("false"));
     }
 
     #[test]

@@ -19,6 +19,7 @@ Last updated: 2026-10-20. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 | Environment variables | **Options > General environment... / Project environment... / Show environment** (both versions, 0.2.14): `NAME=value` files for proxy, PATH and project variables, applied to everything the IDE starts; see the README |
 | Terminal: Replace, mouse, Options | `rust-ide-tui` (0.2.12): Replace all (Ctrl+H / Ctrl+R, one undo), mouse (menus, tabs, cursor, wheel; `--no-mouse` turns it off), Options > Check before run, Options > Line numbers (0.2.13) |
 | Settings dialog | Window version: **Options > Settings...** (Alt+O E) - preview place, window style, Vim mode, check before run, font size, dependencies; keyboard (Up/Down, Left/Right, Enter, letters, Esc) and mouse; changes apply and are remembered at once. The terminal version has no Options menu yet (backlog item 3) |
+| Line numbers | **Options > Line numbers** (window version Alt+O N, terminal Alt+O L; also a Settings row), remembered in line_numbers. The window version reserves a column inside the BlockCursor wrapper (src/cursor.rs) and derives the scroll position from the caret rectangle the editor reports, counting wrapped rows; the current line is highlighted. Until the editor has shown a caret, the numbers start at line 1 |
 | Font size | Window version: **Ctrl+=** larger, **Ctrl+-** smaller, **Ctrl+0** default (also Options menu, Alt+O B / S / R); 10 to 32 points, remembered (`font_size` in the settings file). Applies to the editor (with the block cursor), the Markdown preview and the user screen; menus and panels keep their size. The terminal version uses the terminal's own zoom |
 | Syntax check | Compile > Syntax check, **Alt+F9** (GUI and terminal version): finds errors without building or running - `cargo check` for projects, `rustc --emit=metadata` for single Rust files, the syntax parse for Python; errors go to the Messages panel and the cursor jumps to the first. Options > Check before run (GUI) makes F9 / F5 run it first and stop on errors |
 | Debugger | Debug menu with Turbo Pascal keys: Ctrl+F8 breakpoint, F7 trace into, F8 step over, Shift+F8 step out, F4 go to cursor, Shift+F5 debug run, Ctrl+F7 watch, Ctrl+F2 reset. Rust through `gdb -i dap` (gdb 14+), Python through debugpy. Breakpoints and the execution line are colored in the editor; the debug panel shows watches, arguments and locals, and the call stack |
@@ -37,9 +38,8 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 | # | Item | Effort |
 |---|---|---|
 | 1 | Development environments for project sessions: variables (0.2.14), Python .venv (0.2.15) and Rust toolchain (0.2.16, picker 0.2.17) and sessions (0.2.18) are done, the rest is **next** | L |
-| 2 | Line numbers in the window version | M |
-| 3 | Terminal version: the rest | L |
-| 4 | C# support | L |
+| 2 | Terminal version: the rest | L |
+| 3 | C# support | L |
 
 ### 1. Development environments for project sessions - L (variables, Python .venv and Rust toolchain done, the rest is next)
 **Phase 1 is done in 0.2.14:** both groups of variables as plain `NAME=value` files
@@ -92,23 +92,7 @@ below are proposals; each part is confirmed with you before it is built.**
   general variables may also be set per user vs per machine, and whether the managed download
   should be opt-in.
 
-### 2. Line numbers in the window version - M
-- An **Options > Line numbers** toggle (also in the Settings dialog), remembered, like the one the
-  terminal version has since 0.2.13.
-- The difficulty: iced 0.14's `text_editor` shows no gutter and reports no scroll position, so a
-  separate column of numbers cannot be kept in step with the text. Options to decide between:
-  1. A custom editor widget (own drawing, scrolling, cursor, selection) - the most work, but it
-     would also allow breakpoint dots and error marks in the gutter.
-  2. Patching or forking `text_editor` to expose its scroll offset, then drawing the numbers in a
-     column beside it.
-  3. Only with wrapping off and the editor taller than the file: a plain column, hidden once the
-     text scrolls (cheap but incomplete; not recommended).
-- Must handle: files with Thai text (byte offsets), the Markdown preview next to the editor,
-  every window style, font size changes, and line numbers wider than the column when the file
-  grows past 999 lines.
-- Confirm the option with you before building.
-
-### 3. Terminal version: the rest - L
+### 2. Terminal version: the rest - L
 Suggested sub-steps, easiest first:
 1. ~~Replace, mouse support and an Options menu~~ - done in 0.2.12 (Ctrl+H / Ctrl+R replace all, click menus / tabs / text, Options > Check before run). Still to do: a Settings dialog like the window version's, once there are more settings to put in it (Vim, ...).
 2. Vim mode (reuse `src/vim.rs`).
@@ -117,7 +101,7 @@ Suggested sub-steps, easiest first:
 4. The debugger (breakpoints, F7/F8, watches panel).
 5. Markdown preview: a small renderer built on the `pulldown-cmark` parser (headings, bold, lists, code blocks as styled text).
 
-### 4. C# support (open-source tools only) - L
+### 3. C# support (open-source tools only) - L
 - **Compiler:** the open-source .NET SDK command line (MIT licensed, Roslyn compiler), current
   LTS release. F9 runs `dotnet build`, F5 runs `dotnet run`; errors come from the build output
   (`file(line,col): error CS0103: ...`) into the Messages panel. A single `.cs` file without a
@@ -140,7 +124,6 @@ Suggested sub-steps, easiest first:
 
 ## Known limitations
 
-- **Line numbers** exist only in the terminal version; iced's text editor exposes no scroll position (backlog item 2).
 
 - **Markdown preview** shows images only as their description, does not follow `#heading` links, and does not color code blocks.
 - **Completion popup** sits in the bottom-right corner of the editor, not next to the cursor: the editor widget does not report the cursor's screen position.
