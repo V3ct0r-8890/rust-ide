@@ -3891,14 +3891,13 @@ impl Ide {
         // The list scrolls when the window is too short for every row.
         opaque(
             container(
-                container(body).width(900).max_height(760).style(|_| container::Style {
+                container(body).width(900).max_height(540).style(|_| container::Style {
                     border: iced::Border::default().color(Color::BLACK).width(1),
                     ..container::Style::default().background(TURBO_GRAY)
                 }),
             )
             .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(STATUS_BAR_HEIGHT + 8.0))
-            .center_x(Length::Fill)
-            .height(Length::Fill),
+            .center(Length::Fill),
         )
     }
 
