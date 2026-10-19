@@ -174,7 +174,7 @@ pub fn python_setup(dir: &Path) -> Result<String, String> {
         Some(python) => python,
         None => {
             let system = platform::find_program(platform::python())
-                .ok_or_else(|| "Python is not installed (see Options > Dependencies)".to_string())?;
+                .ok_or_else(|| "Python is not installed (see Tools > Dependencies)".to_string())?;
             let mut command = platform::hidden_command(system);
             apply(&mut command, &root);
             let output = command
@@ -434,7 +434,7 @@ pub fn toolchain_note(name: &str, windows: bool, has_link: bool, has_gcc: bool) 
         return if has_gcc {
             ("GNU: links with MinGW (recommended on Windows)".to_string(), true)
         } else {
-            ("GNU: MinGW gcc was not found (see Options > Dependencies)".to_string(), false)
+            ("GNU: MinGW gcc was not found (see Tools > Dependencies)".to_string(), false)
         };
     }
     let kind = if name.starts_with("stable") {

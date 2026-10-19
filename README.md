@@ -30,7 +30,7 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | Key | Action |
 |---|---|
 | F1 | Keyboard shortcut list |
-| F10 / Alt+letter | Open a menu (Alt+F File, Alt+E Edit, Alt+S Search, Alt+R Run, Alt+C Compile, Alt+O Options, Alt+H Help); arrows and Enter, or the red letter, choose an item |
+| F10 / Alt+letter | Open a menu (Alt+F File, Alt+E Edit, Alt+S Search, Alt+R Run, Alt+C Compile, Alt+T Tools, Alt+O Options, Alt+W Window, Alt+H Help); arrows and Enter, or the red letter, choose an item |
 | F2 / Ctrl+S | Save (asks for a name the first time) |
 | F3 / Ctrl+O | Open (each file in its own window) |
 | F9 | Compile, list errors, jump to the first one |
@@ -54,11 +54,13 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | F6 / Shift+F6 | Next / previous window (open files are shown as tabs) |
 | Alt+1 ... Alt+9, Alt+0 | Go to window 1-9; Alt+0 lists the windows |
 | Alt+F3 | Close the window |
-| Alt+F6 / Alt+P | Markdown preview on / off (for `.md` files), where Options > Preview in says |
+| Alt+F6 / Alt+P | Markdown preview on / off (for `.md` files), where Window > Preview in says |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Font larger / smaller / default (window version; remembered) |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
-**Window style** (window version): **Options > Window style** (Alt+O, then L / H / T) chooses how open files are
+**Menus** (window version, 0.2.32): File, Edit, Search, Run, Compile, Debug, **Tools** (Dependencies, environment, Python .venv, Rust toolchain), **Options** (Settings, Vim, check before run, line numbers, font size), **Window** (next / previous / close, Markdown preview, window style, the open files) and Help.
+
+**Window style** (window version): **Window > Legacy / Horizontal / Vertical** (Alt+W, then L / H / T) chooses how open files are
 shown: *Legacy windows* (Turbo Pascal: a frame line with the file name and the window number, windows chosen with F6,
 Alt+1-9 and the Window menu), *Horizontal tabs* (the default: a tab strip under the menu bar) or *Vertical tabs* (a list of
 the open files on the left of the editor). The tab styles appear once two or more files are open. The keys are the same
@@ -69,11 +71,11 @@ rendered document next to the editor: headings, bold and italic, lists, quotes, 
 what you type and scrolls with the cursor; clicking a link opens web addresses in the browser and other `.md` / text files
 in a window. Images show only their description for now.
 
-**C#** (0.2.21): `.cs` files are highlighted; F9 / Alt+F9 run `dotnet build` on the file's project (the nearest folder above it with a `.csproj`), or on the single file when there is no project (a file-based app, needs the .NET SDK 10 or newer); errors and warnings go to the Messages panel with their `CS` codes, and F5 runs the program in the Output window. Install the SDK with Options > Dependencies (`winget install Microsoft.DotNet.SDK.10` on Windows). Live errors and completion (window version) come from `csharp-ls` (Options > Dependencies installs it with `dotnet tool install -g csharp-ls`) for files inside a `.csproj` / `.sln` folder; a loose single `.cs` file gets highlighting and F9 but no live errors. The debugger is still to come.
+**C#** (0.2.21): `.cs` files are highlighted; F9 / Alt+F9 run `dotnet build` on the file's project (the nearest folder above it with a `.csproj`), or on the single file when there is no project (a file-based app, needs the .NET SDK 10 or newer); errors and warnings go to the Messages panel with their `CS` codes, and F5 runs the program in the Output window. Install the SDK with Tools > Dependencies (`winget install Microsoft.DotNet.SDK.10` on Windows). Live errors and completion (window version) come from `csharp-ls` (Tools > Dependencies installs it with `dotnet tool install -g csharp-ls`) for files inside a `.csproj` / `.sln` folder; a loose single `.cs` file gets highlighting and F9 but no live errors. The debugger is still to come.
 
-**Settings dialog** (window version): **Options > Settings...** (Alt+O E) has the main options in one place: where the Markdown preview opens, window style, Vim mode, check before run, font size and the dependencies check. Up/Down choose a row, Left/Right or Enter change it, a letter (P W V C F D) uses that row, Esc closes; each change is applied and remembered at once. The menu items and keys below still work.
+**Settings dialog** (window version): **Options > Settings...** (Alt+O S) has the main options in one place: where the Markdown preview opens, window style, Vim mode, check before run, font size and the dependencies check. Up/Down choose a row, Left/Right or Enter change it, a letter (P W V C F D) uses that row, Esc closes; each change is applied and remembered at once. The menu items and keys below still work.
 
-**Where the preview opens** is chosen in **Options > Preview in** (Alt+O P cycles it; remembered):
+**Where the preview opens** is chosen in **Window > Preview in** (Alt+W I cycles it; remembered):
 - *side by side* (default): next to the editor;
 - *a new tab*: Alt+F6 opens a `Preview name.md` tab after the file. It shows the text as it was when you selected the tab, and is read again each time you come back to it. Alt+F6 on the preview tab closes it and returns to the file; on the file it jumps to the open preview tab. The preview tab cannot be edited or saved;
 - *a new window*: Alt+F6 opens a separate OS window (move it to a second screen); it follows what you type in the active `.md` file. Alt+F6 or the window's close button closes it.
@@ -112,7 +114,7 @@ like Turbo Pascal's user screen (Alt+F5 shows it again).
 
 - **Replace** (Ctrl+H, or Ctrl+R because many terminals send Ctrl+H as Backspace; Search > Replace...): asks for the text and then the replacement, replaces every match (case ignored, like Find) and Ctrl+Z undoes it in one step.
 - **Options > Check before run**: F9 / F5 first look for errors and stop if there are any (shared setting with the window version).
-- **Options > General / Project environment / Show environment**: see "Environment variables" below (same in the window version).
+- **Options > General / Project environment / Show environment**: see "Environment variables" below (in the window version these are under **Tools**).
 - **Open and Save As start in the folder you used last** (last_dir in the settings file): the active file's folder, else the last folder of a file opened or saved.
 - **Options > Line numbers** (Alt+O L in the terminal version, Alt+O N in the window version, also a Settings row): a column of line numbers left of the text; remembered.
 - **Mouse**: click a menu title, a menu item, a window tab or a place in the text; the wheel moves the cursor. Start with `--no-mouse` if you would rather select text with the terminal's own mouse selection.
@@ -132,20 +134,20 @@ variables, in two groups kept apart. Both are plain text files with one `NAME=va
 (`#` comments, quotes allowed; `$NAME`, `${NAME}` and `%NAME%` use existing values, so
 `PATH=C:	ools;${PATH}` adds to the path). Edits apply at the next build or run, no restart.
 
-- **General** (**Options > General environment...**, Alt+O G): for every project - proxy settings
+- **General** (**Tools > General environment...**, Alt+T G): for every project - proxy settings
   (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), extra `PATH` entries, tool folders. The file is
   `environment.env` next to the IDE's settings file; it starts with a commented template.
-- **Project** (**Options > Project environment...**, Alt+O O): for the project of the open file
+- **Project** (**Tools > Project environment...**, Alt+T P): for the project of the open file
   (`.rust-ide/env` in the project folder: the Git root, else the nearest folder with a
   `Cargo.toml`, `pyproject.toml`, `requirements.txt` or `.venv`). A project value wins over a
   general one with the same name. If the project has a `.gitignore`, `.rust-ide/` is added to it so
   secrets are not committed.
-- **Options > Show environment** (Alt+O X) opens a window listing both groups and where each file is.
-- **Options > Python .venv setup** (Alt+O Y): creates `.venv` in the project folder if there is none, then
+- **Tools > Show environment** (Alt+T S) opens a window listing both groups and where each file is.
+- **Tools > Python .venv setup** (Alt+T V): creates `.venv` in the project folder if there is none, then
   installs `requirements.txt` (or the project itself with `pip install -e .` when it has a
   `pyproject.toml` / `setup.py`). F5 and the syntax check then use the `.venv` interpreter (the
   debugger and language server already did). The environment variables above apply to pip too.
-- **Options > Rust toolchain...** (Alt+O U): a list of the toolchains `rustup` has installed, with a
+- **Tools > Rust toolchain...** (Alt+T R): a list of the toolchains `rustup` has installed, with a
   hint on each row; Up/Down and Enter pick one, **Default** goes back to rustup's default, and
   **Other name...** (O) lets you type one. The choice is saved as `RUSTUP_TOOLCHAIN=` in the project
   environment, so builds, runs, the debugger and rust-analyzer use it (reopen the file to restart
@@ -233,7 +235,7 @@ See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limita
 - Fedora, RHEL 9/10, Rocky Linux, AlmaLinux
 
 At startup rust-ide checks for the tools it needs (Rust, a C linker, Python, rust-analyzer,
-basedpyright, ...). If something is missing it opens **Options > Dependencies**, which shows
+basedpyright, ...). If something is missing it opens **Tools > Dependencies**, which shows
 the install command for your system, can install user-level tools itself, and links to the
 **[install guide](docs/INSTALL.md)**. On Linux it also checks the GUI libraries before opening
 its window and prints the exact `apt` / `dnf` command if any are missing.

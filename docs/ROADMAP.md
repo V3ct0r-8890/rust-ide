@@ -12,16 +12,16 @@ Last updated: 2026-10-20. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 | Highlighting | Rust and Python, multi-line comments and strings |
 | Language servers | rust-analyzer and basedpyright/pyright: live errors in the editor and a live Messages panel, completion popup (Ctrl+Space, auto after `.` and `::`) |
 | Editing | Undo/redo (Ctrl+Z, Ctrl+Y); Vim mode (Options > Vim mode): motions, operators, text objects (`ciw`, `di(`, `da"`), `f`/`t` with `;` `,`, `.` repeat, marks, Visual and Visual-line mode |
-| Markdown preview | Window version: **Alt+F6** / Alt+P / Window menu shows the rendered `.md` next to the editor (iced's Markdown widget: headings, emphasis, lists, quotes, tables, code blocks, links); follows typing and the cursor; links open in the browser or as files. **Options > Preview in** (Alt+O P) picks where it shows: side by side, in its own tab (refreshed when you select it), or in a separate window (follows typing) |
-| Window style | Options > Window style (window version): **Legacy windows** (Turbo Pascal frame line with the name and window number), **Horizontal tabs** (default) or **Vertical tabs** (list on the left); same keys in every style; the choice is remembered |
+| Markdown preview | Window version: **Alt+F6** / Alt+P / Window menu shows the rendered `.md` next to the editor (iced's Markdown widget: headings, emphasis, lists, quotes, tables, code blocks, links); follows typing and the cursor; links open in the browser or as files. **Window > Preview in** (Alt+W I) picks where it shows: side by side, in its own tab (refreshed when you select it), or in a separate window (follows typing) |
+| Window style | Window > Legacy / Horizontal / Vertical (window version; was under Options before 0.2.32): **Legacy windows** (Turbo Pascal frame line with the name and window number), **Horizontal tabs** (default) or **Vertical tabs** (list on the left); same keys in every style; the choice is remembered |
 | New files | Started without a file, the IDE (both versions) asks which language to use: Rust, Python, or Text / Markdown for anything else; File > New asks too. The last choice is remembered and preselected; the type sets highlighting, the `NONAME.xx` name and the Save As default; `.txt` and `.md` open as plain files |
 | New project | **File > New project...** (Alt+F P, both versions): Rust, Python or C#, size Simple / Low / Medium / Complex, a name and a folder; writes the project and opens its main file. All 12 templates are built, run and tested by `cargo test templates:: -- --ignored` (run in CI) |
-| Environment variables | **Options > General environment... / Project environment... / Show environment** (both versions, 0.2.14): `NAME=value` files for proxy, PATH and project variables, applied to everything the IDE starts; see the README |
+| Environment variables | **General environment... / Project environment... / Show environment** (Tools menu in the window version, Options in the terminal version; 0.2.14): `NAME=value` files for proxy, PATH and project variables, applied to everything the IDE starts; see the README |
 | Terminal: Replace, mouse, Options | `rust-ide-tui` (0.2.12): Replace all (Ctrl+H / Ctrl+R, one undo), mouse (menus, tabs, cursor, wheel; `--no-mouse` turns it off), Options > Check before run, Options > Line numbers (0.2.13) |
-| Settings dialog | Window version: **Options > Settings...** (Alt+O E) - preview place, window style, Vim mode, check before run, font size, dependencies; keyboard (Up/Down, Left/Right, Enter, letters, Esc) and mouse; changes apply and are remembered at once. The terminal version has no Options menu yet (backlog item 3) |
+| Settings dialog | Window version: **Options > Settings...** (Alt+O S) - preview place, window style, Vim mode, check before run, font size, dependencies; keyboard (Up/Down, Left/Right, Enter, letters, Esc) and mouse; changes apply and are remembered at once. The terminal version has no Options menu yet (backlog item 3) |
 | Last folder | Open / Save As dialogs start in the active file's folder, else the folder of the file opened or saved last (last_dir, 0.2.20; both versions) |
 | Line numbers | **Options > Line numbers** (window version Alt+O N, terminal Alt+O L; also a Settings row), remembered in line_numbers. The window version reserves a column inside the BlockCursor wrapper (src/cursor.rs) and derives the scroll position from the caret rectangle the editor reports, counting wrapped rows; the current line is highlighted. Until the editor has shown a caret, the numbers start at line 1 |
-| Font size | Window version: **Ctrl+=** larger, **Ctrl+-** smaller, **Ctrl+0** default (also Options menu, Alt+O B / S / R); 10 to 32 points, remembered (`font_size` in the settings file). Applies to the editor (with the block cursor), the Markdown preview and the user screen; menus and panels keep their size. The terminal version uses the terminal's own zoom |
+| Font size | Window version: **Ctrl+=** larger, **Ctrl+-** smaller, **Ctrl+0** default (also Options menu, Alt+O L / M / D); 10 to 32 points, remembered (`font_size` in the settings file). Applies to the editor (with the block cursor), the Markdown preview and the user screen; menus and panels keep their size. The terminal version uses the terminal's own zoom |
 | Syntax check | Compile > Syntax check, **Alt+F9** (GUI and terminal version): finds errors without building or running - `cargo check` for projects, `rustc --emit=metadata` for single Rust files, the syntax parse for Python; errors go to the Messages panel and the cursor jumps to the first. Options > Check before run (GUI) makes F9 / F5 run it first and stop on errors |
 | Debugger | Debug menu with Turbo Pascal keys: Ctrl+F8 breakpoint, F7 trace into, F8 step over, Shift+F8 step out, F4 go to cursor, Shift+F5 debug run, Ctrl+F7 watch, Ctrl+F2 reset. Rust through `gdb -i dap` (gdb 14+), Python through debugpy. Breakpoints and the execution line are colored in the editor; the debug panel shows watches, arguments and locals, and the call stack |
 | Terminal version | `rust-ide-tui` (ratatui + crossterm): Turbo colors, block cursor, menus with hotkeys, F1 help, windows, find / search again / go to line, F9 compile with messages, F5 runs the program in the terminal (user screen, Alt+F5), open-file dialog. Shares the build runner, search and lexers with the GUI through the library crate |
@@ -29,7 +29,7 @@ Last updated: 2026-10-20. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 | Keyboard | Everything reachable from the keyboard: F1 shortcut list, F10 / Alt+letter menus with arrow keys and red hotkey letters, Dependencies dialog keys, Alt+F8/Alt+F7 through messages, Tab/Shift+Tab indent; Turbo-style block cursor; the editor has focus at startup |
 | Search | Search menu: Find (Ctrl+F) with all matches highlighted and a match count, Replace / Replace all (Ctrl+H, undoable), Search again (Ctrl+L), Go to line (Ctrl+G) |
 | Platforms | Windows 10/11 (GNU toolchain, no Visual Studio), Ubuntu 24.04+, Fedora, RHEL/Rocky/AlmaLinux 9 and 10 |
-| Setup help | Options > Dependencies checks every tool, shows per-OS install commands, installs user-level tools, links to [INSTALL.md](INSTALL.md); Linux checks GUI libraries before opening its window |
+| Setup help | Tools > Dependencies checks every tool, shows per-OS install commands, installs user-level tools, links to [INSTALL.md](INSTALL.md); Linux checks GUI libraries before opening its window |
 | Releases | Windows zip and Linux tar.gz with install scripts; CI on 5 systems; tagging `vX.Y.Z` publishes a release |
 
 ## Backlog
@@ -86,7 +86,7 @@ below are proposals; each part is confirmed with you before it is built.**
   fetched too), and Python as a relocatable build (python-build-standalone, which includes `pip`
   and `venv`; the python.org embeddable zip has neither). The Dependencies dialog already installs
   user-level tools and would be extended to do this.
-  **Done in 0.2.25 (Python and Rust):** two opt-in rows in Options > Dependencies, "Managed Python"
+  **Done in 0.2.25 (Python and Rust):** two opt-in rows in Tools > Dependencies, "Managed Python"
   (python-build-standalone 3.13, checksum from the release's `SHA256SUMS`) and "Managed Rust"
   (`rustup-init` with the stable minimal profile + rust-analyzer, GNU host on Windows, checksum from
   its `.sha256`), installed with `curl` and `tar` under `%LOCALAPPDATA%\rust-ide\tools` (Linux
@@ -114,9 +114,9 @@ Suggested sub-steps, easiest first:
 **Phase 1 is done in 0.2.21:** C# in the language list (`.cs`), a C# lexer (keywords, `$"..."`, `@"..."`,
 raw `"""` strings, `#region`), F9 / Alt+F9 through `dotnet build` (the nearest `.csproj`, else the single
 file as a file-based app on .NET 10+), MSBuild messages (`file(line,col): error CS...`) in the Messages
-panel, F5 through `dotnet run`, and ".NET SDK 10" in Options > Dependencies. Both versions.
+panel, F5 through `dotnet run`, and ".NET SDK 10" in Tools > Dependencies. Both versions.
 - **Language server - done in 0.2.22:** `csharp-ls` (MIT, `dotnet tool install -g csharp-ls`, listed in
-  Options > Dependencies) for live errors and completion; its root is the nearest `.sln` / `.csproj` folder,
+  Tools > Dependencies) for live errors and completion; its root is the nearest `.sln` / `.csproj` folder,
   so loose single files get none. Live test: `dotnet tool install csharp-ls --tool-path .dotnet-tools` then
   `cargo test csharp_ls_live -- --ignored`.
 - **Debugger - done in 0.2.24:** `netcoredbg` (Samsung, MIT), which speaks the Debug Adapter Protocol like gdb and
@@ -125,7 +125,7 @@ panel, F5 through `dotnet run`, and ".NET SDK 10" in Options > Dependencies. Bot
   next to the project, on PATH, or via `NETCOREDBG`. Single files (file-based apps) cannot be debugged yet,
   and the terminal version has no debugger at all. Live test: put netcoredbg in `.dotnet-tools/netcoredbg`
   then `cargo test netcoredbg -- --ignored`. Not yet tried on Linux.
-- **Setup:** csharp-ls and netcoredbg in Options > Dependencies, the install scripts and docs/INSTALL.md;
+- **Setup:** csharp-ls and netcoredbg in Tools > Dependencies, the install scripts and docs/INSTALL.md;
   Ubuntu `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed) and Fedora/RHEL
   `sudo dnf install dotnet-sdk-10.0` are listed but not yet tried on those systems; netcoredbg from its
   GitHub releases.
@@ -147,7 +147,7 @@ panel, F5 through `dotnet run`, and ".NET SDK 10" in Options > Dependencies. Bot
 - **Live errors** are shown for the active window; a background window gets fresh ones when you switch to it.
 - **Undo** restores whole-text snapshots, so the view can jump after a large undo.
 - **WSL:** software rendering (`--software`) is unstable under WSLg; the default GPU renderer works.
-- **Not yet tested with a real keyboard:** Alt+F5 and typing into the Output window, and the Install button in Options > Dependencies. Automated tests send synthetic keys, which Windows handles differently.
+- **Not yet tested with a real keyboard:** Alt+F5 and typing into the Output window, and the Install button in Tools > Dependencies. Automated tests send synthetic keys, which Windows handles differently.
 - **No LICENSE file yet.** Until one is added, others may view the code but have no clear right to reuse it.
 
 ## For contributors

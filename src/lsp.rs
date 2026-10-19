@@ -367,19 +367,19 @@ fn start_server(
     let (program, args, name) = match lang {
         Lang::Rust => (
             find_program(root, &["rust-analyzer"])
-                .ok_or("rust-analyzer not installed (see Options > Dependencies)")?,
+                .ok_or("rust-analyzer not installed (see Tools > Dependencies)")?,
             Vec::new(),
             "rust-analyzer",
         ),
         Lang::CSharp => (
             find_program(root, CSHARP_SERVERS)
-                .ok_or("csharp-ls not installed (see Options > Dependencies)")?,
+                .ok_or("csharp-ls not installed (see Tools > Dependencies)")?,
             Vec::new(),
             "csharp-ls",
         ),
         _ => {
             let program = find_program(root, PYTHON_SERVERS)
-                .ok_or("Python LSP not installed (see Options > Dependencies)")?;
+                .ok_or("Python LSP not installed (see Tools > Dependencies)")?;
             (program, vec!["--stdio"], "pyright")
         }
     };

@@ -1,7 +1,7 @@
 //! Tools the IDE downloads for itself ("Set up tools for the IDE"): a relocatable Python
 //! (python-build-standalone) and Rust through rustup, kept in the IDE's own data folder, apart
 //! from the system. Opt-in: nothing is downloaded until the user presses Install in
-//! Options > Dependencies. Managed tools are looked up before the ones on PATH.
+//! Tools > Dependencies. Managed tools are looked up before the ones on PATH.
 
 use std::path::{Path, PathBuf};
 

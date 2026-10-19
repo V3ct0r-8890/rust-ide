@@ -1,7 +1,7 @@
 # Installing rust-ide and its tools
 
 rust-ide drives tools you install separately. When something is missing,
-it opens **Options > Dependencies** at startup, where it lists each tool,
+it opens **Tools > Dependencies** at startup, where it lists each tool,
 shows the install command, and can install some of them for you.
 This page lists the same steps for each supported system.
 
@@ -55,7 +55,7 @@ python -m pip install --user basedpyright debugpy
 
 gdb comes with the MinGW-w64 (WinLibs) package above.
 
-Don't want to install Python or Rust yourself? Options > Dependencies has "Managed Python" and
+Don't want to install Python or Rust yourself? Tools > Dependencies has "Managed Python" and
 "Managed Rust" rows that download the IDE's own copies (needs `curl` and `tar`, both built into
 Windows 10+); the IDE uses them before the ones on PATH.
 
@@ -135,7 +135,7 @@ cargo build --release
 
 ## Checking your setup
 
-Open **Options > Dependencies** at any time. Each tool shows `[ OK ]` with
+Open **Tools > Dependencies** at any time. Each tool shows `[ OK ]` with
 its version, or `[MISS]` with:
 
 - **Install**: rust-ide runs the command for you (only for commands that

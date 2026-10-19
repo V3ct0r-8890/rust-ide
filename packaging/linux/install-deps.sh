@@ -48,4 +48,4 @@ if [ "${gdb_major:-0}" -lt 14 ] && command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y gcc-toolset-14-gdb || echo "Could not install gcc-toolset-14-gdb; Rust debugging needs gdb 14+."
 fi
 
-say "Done. Open a new terminal, then run rust-ide. Options > Dependencies shows what was found."
+say "Done. Open a new terminal, then run rust-ide. Tools > Dependencies shows what was found."

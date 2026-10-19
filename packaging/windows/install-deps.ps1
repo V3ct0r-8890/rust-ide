@@ -39,4 +39,4 @@ python -m pip install --user basedpyright debugpy
 
 Write-Host ""
 Write-Host "Done. Open a new terminal (so PATH is refreshed) and start rust-ide.exe." -ForegroundColor Green
-Write-Host "In the IDE, Options > Dependencies shows what was found."
+Write-Host "In the IDE, Tools > Dependencies shows what was found."

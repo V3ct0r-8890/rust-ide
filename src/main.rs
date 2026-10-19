@@ -33,8 +33,8 @@ const TURBO_YELLOW: Color = Color::from_rgb(1.0, 1.0, 0.33);
 const TURBO_RED: Color = Color::from_rgb(0.66, 0.0, 0.0);
 const SCREEN_TEXT: Color = Color::from_rgb(0.75, 0.75, 0.75);
 
-const MENU_TITLES: [&str; 9] = [
-    "File", "Edit", "Search", "Run", "Compile", "Debug", "Options", "Window", "Help",
+const MENU_TITLES: [&str; 10] = [
+    "File", "Edit", "Search", "Run", "Compile", "Debug", "Tools", "Options", "Window", "Help",
 ];
 const MENU_TITLE_WIDTH: f32 = 84.0;
 const MENU_BAR_HEIGHT: f32 = 26.0;
@@ -67,7 +67,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Window", "Alt+1 ... Alt+9", "Go to window 1-9"),
     ("Window", "Alt+0", "Window list (Window menu)"),
     ("Window", "Alt+F3", "Close the window (press twice to discard changes)"),
-    ("Window", "Alt+F6 / Alt+P", "Markdown preview of a .md file: beside it, in a tab or in a window (Alt+O P chooses)"),
+    ("Window", "Alt+F6 / Alt+P", "Markdown preview of a .md file: beside it, in a tab or in a window (Alt+W I chooses)"),
     ("Edit", "Ctrl+Z / Ctrl+Y", "Undo / redo (Ctrl+Shift+Z also redoes)"),
     ("Edit", "Tab / Shift+Tab", "Indent / unindent"),
     ("Edit", "Ctrl+Space", "Code completion (also after . and ::)"),
@@ -86,17 +86,17 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Run", "Alt+F5", "Show / hide the Output window (User screen)"),
     ("Run", "Ctrl+F2", "Program reset: stop the running program"),
     ("Run", "Enter", "In the Output window: send the typed input"),
-    ("Options", "Alt+O D", "Dependencies: Up/Down/Tab (also reaches the buttons), I install, C copy, G guide, R re-check, S startup check"),
-    ("Options", "Alt+O E", "Settings dialog: preview place, window style, Vim, check before run, line numbers, font size, dependencies"),
-    ("Options", "Alt+O G", "General environment: proxy, PATH ... for everything the IDE starts (NAME=value file)"),
-    ("Options", "Alt+O O", "Project environment: variables for this project (.rust-ide/env, overrides the general ones)"),
-    ("Options", "Alt+O X", "Show environment: the general and project variables that apply now"),
-    ("Options", "Alt+O Y", "Python .venv setup: create .venv in the project and install requirements.txt (or the project)"),
-    ("Options", "Alt+O U", "Rust toolchain: pick one of the installed toolchains for this project (Up/Down, Enter, O other name)"),
+    ("Tools", "Alt+T D", "Dependencies: Up/Down/Tab (also reaches the buttons), I install, C copy, G guide, R re-check, S startup check"),
+    ("Options", "Alt+O S", "Settings dialog: preview place, window style, Vim, check before run, line numbers, font size, dependencies"),
+    ("Tools", "Alt+T G", "General environment: proxy, PATH ... for everything the IDE starts (NAME=value file)"),
+    ("Tools", "Alt+T P", "Project environment: variables for this project (.rust-ide/env, overrides the general ones)"),
+    ("Tools", "Alt+T S", "Show environment: the general and project variables that apply now"),
+    ("Tools", "Alt+T V", "Python .venv setup: create .venv in the project and install requirements.txt (or the project)"),
+    ("Tools", "Alt+T R", "Rust toolchain: pick one of the installed toolchains for this project (Up/Down, Enter, O other name)"),
     ("Options", "Alt+O V", "Vim mode on / off"),
     ("Options", "Alt+O C", "Check the syntax before compile / run on / off"),
-    ("Options", "Ctrl+= / Ctrl+- / Ctrl+0", "Editor font larger / smaller / default size (also Alt+O B / S / R)"),
-    ("Options", "Alt+O L / H / T", "Window style: legacy windows / horizontal tabs / vertical tabs"),
+    ("Options", "Ctrl+= / Ctrl+- / Ctrl+0", "Editor font larger / smaller / default size (also Alt+O L / M / D)"),
+    ("Window", "Alt+W L / H / T", "Window style: legacy windows / horizontal tabs / vertical tabs"),
     ("Help", "F1", "This list (Up/Down, Page Up/Down scroll; Esc or F1 closes)"),
     ("Vim", "i a o O, Esc", "Insert mode, back to Normal"),
     ("Vim", "h j k l w b e 0 ^ $ gg G", "Motions (with counts)"),
@@ -180,18 +180,20 @@ enum Menu {
     Run,
     Compile,
     Debug,
+    Tools,
     Options,
     Window,
     Help,
 }
 
-const MENUS: [Menu; 9] = [
+const MENUS: [Menu; 10] = [
     Menu::File,
     Menu::Edit,
     Menu::Search,
     Menu::Run,
     Menu::Compile,
     Menu::Debug,
+    Menu::Tools,
     Menu::Options,
     Menu::Window,
     Menu::Help,
@@ -408,43 +410,27 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
             item("Clear breakpoints", 'l', "", Message::ClearBreakpoints),
             item("Program reset", 'r', "Ctrl+F2", Message::OutputStop),
         ],
+        // Setting up the machine and the project: tools, environment, toolchains.
+        Menu::Tools => vec![
+            item("Dependencies...", 'd', "", Message::ShowDeps),
+            item("General environment...", 'g', "", Message::EditEnv(true)),
+            item("Project environment...", 'p', "", Message::EditEnv(false)),
+            item("Show environment", 's', "", Message::ShowEnv),
+            item("Python .venv setup", 'v', "", Message::PythonSetup),
+            item("Rust toolchain...", 'r', "", Message::OpenToolchains),
+        ],
+        // How the editor behaves and looks.
         Menu::Options => {
-            let mut items = vec![
-                item("Settings...", 'e', "", Message::OpenSettings),
-                item("Dependencies...", 'd', "", Message::ShowDeps),
-                item("General environment...", 'g', "", Message::EditEnv(true)),
-                item("Project environment...", 'o', "", Message::EditEnv(false)),
-                item("Show environment", 'x', "", Message::ShowEnv),
-                item("Python .venv setup", 'y', "", Message::PythonSetup),
-                item("Rust toolchain...", 'u', "", Message::OpenToolchains),
-                item(if toggles.vim { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
-                item(
-                    if toggles.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
-                    'c',
-                    "",
-                    Message::ToggleCheckBefore,
-                ),
-            ];
-            items.push(item(
-                if toggles.line_numbers { "Line numbers       [x]" } else { "Line numbers       [ ]" },
-                'n',
-                "",
-                Message::ToggleLineNumbers,
-            ));
-            items.push(item("Font larger", 'b', "Ctrl+=", Message::FontLarger));
-            items.push(item("Font smaller", 's', "Ctrl+-", Message::FontSmaller));
-            items.push(item("Font default", 'r', "Ctrl+0", Message::FontDefault));
-            // How windows are shown: pick one.
-            for (style, hotkey) in [
-                (WindowStyle::Legacy, 'l'),
-                (WindowStyle::Horizontal, 'h'),
-                (WindowStyle::Vertical, 't'),
-            ] {
-                let mark = if toggles.window_style == style { "(*)" } else { "( )" };
-                items.push(item(format!("{:<19}{mark}", style.label()), hotkey, "", Message::WindowStyle(style)));
-            }
-            items.push(item(format!("Preview in: {}", toggles.preview_mode.label()), 'p', "", Message::CyclePreviewMode));
-            items
+            let on = |flag: bool, label: &str| format!("{label:<18}{}", if flag { "[x]" } else { "[ ]" });
+            vec![
+                item("Settings...", 's', "", Message::OpenSettings),
+                item(on(toggles.vim, "Vim mode"), 'v', "", Message::ToggleVim),
+                item(on(toggles.check_before, "Check before run"), 'c', "", Message::ToggleCheckBefore),
+                item(on(toggles.line_numbers, "Line numbers"), 'n', "", Message::ToggleLineNumbers),
+                item("Font larger", 'l', "Ctrl+=", Message::FontLarger),
+                item("Font smaller", 'm', "Ctrl+-", Message::FontSmaller),
+                item("Font default", 'd', "Ctrl+0", Message::FontDefault),
+            ]
         }
         Menu::Window => {
             const ALT_KEYS: [&str; 9] = ["Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5", "Alt+6", "Alt+7", "Alt+8", "Alt+9"];
@@ -458,7 +444,17 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
                     "Alt+F6",
                     Message::TogglePreview,
                 ),
+                item(format!("Preview in: {}", toggles.preview_mode.label()), 'i', "", Message::CyclePreviewMode),
             ];
+            // How windows are shown: pick one.
+            for (style, hotkey) in [
+                (WindowStyle::Legacy, 'l'),
+                (WindowStyle::Horizontal, 'h'),
+                (WindowStyle::Vertical, 't'),
+            ] {
+                let mark = if toggles.window_style == style { "(*)" } else { "( )" };
+                items.push(item(format!("{:<19}{mark}", style.label()), hotkey, "", Message::WindowStyle(style)));
+            }
             for (index, name) in windows.iter().enumerate() {
                 let mark = if index == active { ">" } else { " " };
                 let hotkey = char::from_digit((index as u32 + 1) % 10, 10).unwrap_or(' ');
@@ -466,8 +462,7 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
                 items.push(item(format!("{}{mark}{name}", index + 1), hotkey, keys, Message::SelectWindow(index)));
             }
             items
-        }
-        Menu::Help => vec![
+        }        Menu::Help => vec![
             item("Keyboard shortcuts", 'k', "F1", Message::ToggleHelp),
             item("Install guide (GitHub)", 'i', "", Message::OpenUrl(platform::INSTALL_GUIDE_URL)),
             item("Project page (GitHub)", 'p', "", Message::OpenUrl(platform::GITHUB_URL)),
@@ -2133,7 +2128,7 @@ impl Ide {
                     return Task::none();
                 };
                 let Some(debugger) = dap::find_netcoredbg(&root) else {
-                    self.status = "Debugging C# needs netcoredbg (see Options > Dependencies)".into();
+                    self.status = "Debugging C# needs netcoredbg (see Tools > Dependencies)".into();
                     return Task::none();
                 };
                 let Some(dll) = dap::csharp_dll(&project) else {
@@ -2158,7 +2153,7 @@ impl Ide {
             }
             Lang::Rust => {
                 let Some((gdb, _)) = dap::find_gdb() else {
-                    self.status = "Debugging Rust needs gdb 14 or newer (see Options > Dependencies)".into();
+                    self.status = "Debugging Rust needs gdb 14 or newer (see Tools > Dependencies)".into();
                     return Task::none();
                 };
                 dap::Launch {
@@ -2172,7 +2167,7 @@ impl Ide {
             }
             _ => {
                 let Some(python) = dap::debugpy_python(&root) else {
-                    self.status = "Debugging Python needs debugpy (see Options > Dependencies)".into();
+                    self.status = "Debugging Python needs debugpy (see Tools > Dependencies)".into();
                     return Task::none();
                 };
                 let script = target.args.first().cloned().unwrap_or_else(|| path.to_string_lossy().into_owned());
@@ -5308,7 +5303,7 @@ mod language_tests {
     fn environment_items_open_the_files_and_the_listing() {
         let _settings = isolate_settings();
         let mut ide = Ide::default();
-        let items = menu_items(Menu::Options, ide.toggles(), &[], 0);
+        let items = menu_items(Menu::Tools, ide.toggles(), &[], 0);
         assert!(items.iter().any(|i| i.label == "General environment..."));
         send(&mut ide, [Message::EditEnv(true)]);
         let path = ide.path.clone().expect("the general file is open");
@@ -5328,7 +5323,7 @@ mod language_tests {
         std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
         let mut ide = Ide::default();
         ide.path = Some(root.join("main.rs"));
-        assert!(menu_items(Menu::Options, ide.toggles(), &[], 0).iter().any(|i| i.label == "Rust toolchain..."));
+        assert!(menu_items(Menu::Tools, ide.toggles(), &[], 0).iter().any(|i| i.label == "Rust toolchain..."));
         assert_eq!(ide.toolchain_label(), "  Rust default");
 
         // The picker: default first, installed ones after, "Other name..." last.
@@ -5488,7 +5483,7 @@ mod window_style_tests {
     fn options_menu_lists_the_styles_with_radio_marks() {
         for current in [WindowStyle::Legacy, WindowStyle::Horizontal, WindowStyle::Vertical] {
             let toggles = Toggles { window_style: current, ..Toggles::default() };
-            let items = menu_items(Menu::Options, toggles, &[], 0);
+            let items = menu_items(Menu::Window, toggles, &[], 0);
             let styles: Vec<_> = items
                 .iter()
                 .filter(|i| matches!(i.message, Some(Message::WindowStyle(_))))
@@ -5501,23 +5496,23 @@ mod window_style_tests {
                 assert_eq!(item.label.ends_with("(*)"), style == current, "{}", item.label);
             }
         }
-        let hotkeys: Vec<char> = menu_items(Menu::Options, Toggles::default(), &[], 0).iter().map(|i| i.hotkey).collect();
+        let hotkeys: Vec<char> = menu_items(Menu::Window, Toggles::default(), &[], 0).iter().map(|i| i.hotkey).collect();
         let mut unique = hotkeys.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!(unique.len(), hotkeys.len(), "no hotkey is used twice in the Options menu: {hotkeys:?}");
+        assert_eq!(unique.len(), hotkeys.len(), "no hotkey is used twice in the Window menu: {hotkeys:?}");
     }
 
     #[test]
     fn menu_hotkeys_pick_a_style() {
         let _settings = isolate_settings();
         let mut ide = Ide::default();
-        send(&mut ide, [Message::OpenMenu(Menu::Options), Message::Nav(NavKey::Char('t'))]);
+        send(&mut ide, [Message::OpenMenu(Menu::Window), Message::Nav(NavKey::Char('t'))]);
         assert_eq!(ide.window_style, WindowStyle::Vertical);
         assert!(ide.menu.is_none());
-        send(&mut ide, [Message::OpenMenu(Menu::Options), Message::Nav(NavKey::Char('l'))]);
+        send(&mut ide, [Message::OpenMenu(Menu::Window), Message::Nav(NavKey::Char('l'))]);
         assert_eq!(ide.window_style, WindowStyle::Legacy);
-        send(&mut ide, [Message::OpenMenu(Menu::Options), Message::Nav(NavKey::Char('h'))]);
+        send(&mut ide, [Message::OpenMenu(Menu::Window), Message::Nav(NavKey::Char('h'))]);
         assert_eq!(ide.window_style, WindowStyle::Horizontal);
     }
 
@@ -5789,7 +5784,7 @@ mod font_tests {
     #[test]
     fn options_menu_has_the_font_items_with_unique_hotkeys() {
         let items = menu_items(Menu::Options, Toggles::default(), &[], 0);
-        for (label, hotkey, keys) in [("Font larger", 'b', "Ctrl+="), ("Font smaller", 's', "Ctrl+-"), ("Font default", 'r', "Ctrl+0")] {
+        for (label, hotkey, keys) in [("Font larger", 'l', "Ctrl+="), ("Font smaller", 'm', "Ctrl+-"), ("Font default", 'd', "Ctrl+0")] {
             let i = items.iter().find(|i| i.label == label).expect(label);
             assert!(i.hotkey == hotkey && i.keys == keys);
         }
@@ -5846,7 +5841,7 @@ mod preview_place_tests {
         assert_eq!(ide.preview_mode, PreviewMode::Tab);
         send(&mut ide, [Message::CyclePreviewMode, Message::CyclePreviewMode]);
         assert_eq!(ide.preview_mode, PreviewMode::Side);
-        let items = menu_items(Menu::Options, ide.toggles(), &[], 0);
+        let items = menu_items(Menu::Window, ide.toggles(), &[], 0);
         assert!(items.iter().any(|i| i.label == "Preview in: side by side" && i.message.is_some()));
     }
 
@@ -6185,5 +6180,39 @@ mod project_dialog_tests {
         );
         assert!(ide.project.as_ref().unwrap().error.contains("already exists"));
         let _ = ide.view(window::Id::unique());
+    }
+}
+
+#[cfg(test)]
+mod menu_layout_tests {
+    use super::*;
+
+    #[test]
+    fn menus_group_their_items_and_never_repeat_a_hotkey() {
+        let labels = |menu| -> Vec<String> {
+            menu_items(menu, Toggles::default(), &[], 0).into_iter().map(|i| i.label).collect()
+        };
+        let has = |menu, word: &str| labels(menu).iter().any(|l| l.starts_with(word));
+        for word in ["Dependencies", "General environment", "Project environment", "Show environment", "Python .venv", "Rust toolchain"] {
+            assert!(has(Menu::Tools, word) && !has(Menu::Options, word), "{word} belongs in Tools");
+        }
+        for word in ["Settings", "Vim mode", "Check before run", "Line numbers", "Font larger"] {
+            assert!(has(Menu::Options, word), "{word} belongs in Options");
+        }
+        for word in ["Markdown preview", "Preview in", "Legacy windows", "Horizontal tabs", "Vertical tabs"] {
+            assert!(has(Menu::Window, word) && !has(Menu::Options, word), "{word} belongs in Window");
+        }
+        for menu in MENUS {
+            let mut hotkeys: Vec<char> = menu_items(menu, Toggles::default(), &[], 0).iter().map(|i| i.hotkey).collect();
+            let all = hotkeys.len();
+            hotkeys.sort();
+            hotkeys.dedup();
+            assert_eq!(hotkeys.len(), all, "{menu:?} repeats a hotkey");
+        }
+        let firsts: Vec<char> = MENU_TITLES.iter().filter_map(|t| t.chars().next()).collect();
+        let mut unique = firsts.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), firsts.len(), "Alt+letter must open one menu: {firsts:?}");
     }
 }
