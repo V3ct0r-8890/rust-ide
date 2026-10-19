@@ -3878,7 +3878,7 @@ impl Ide {
             container(header).width(Length::Fill).padding(2).style(|_| {
                 container::Style::default().background(TURBO_BLUE)
             }),
-            column(rows).spacing(6).padding(10),
+            scrollable(column(rows).spacing(6).padding(10)).height(Length::Fill),
             container(text(message).color(TURBO_RED)).padding([0, 10]),
             container(
                 text(" Up/Down select   I install   C copy   G guide   R re-check   S startup check   Esc close")
@@ -3888,14 +3888,17 @@ impl Ide {
             container(buttons).padding(10),
         ];
 
+        // The list scrolls when the window is too short for every row.
         opaque(
             container(
-                container(body).width(900).style(|_| container::Style {
+                container(body).width(900).max_height(760).style(|_| container::Style {
                     border: iced::Border::default().color(Color::BLACK).width(1),
                     ..container::Style::default().background(TURBO_GRAY)
                 }),
             )
-            .center(Length::Fill),
+            .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(STATUS_BAR_HEIGHT + 8.0))
+            .center_x(Length::Fill)
+            .height(Length::Fill),
         )
     }
 
