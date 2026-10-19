@@ -20,7 +20,7 @@ Back-end engines (run invisibly by the IDE, never typed by the user):
 |---|---|---|---|
 | Build / check | `cargo build --message-format=json` | `py_compile` / `ruff` | `dotnet build` (the project, or the single file) |
 | Run | `cargo run` | `python` / `pythonw` | `dotnet run` |
-| Code intelligence | `rust-analyzer` (LSP) | `pyright` / `ruff` (LSP) | highlighting only for now |
+| Code intelligence | `rust-analyzer` (LSP) | `pyright` / `ruff` (LSP) | `csharp-ls` (LSP) |
 | Debug | `codelldb` (DAP) | `debugpy` (DAP) | not yet |
 
 ## Keys
@@ -69,7 +69,7 @@ rendered document next to the editor: headings, bold and italic, lists, quotes, 
 what you type and scrolls with the cursor; clicking a link opens web addresses in the browser and other `.md` / text files
 in a window. Images show only their description for now.
 
-**C#** (0.2.21): `.cs` files are highlighted; F9 / Alt+F9 run `dotnet build` on the file's project (the nearest folder above it with a `.csproj`), or on the single file when there is no project (a file-based app, needs the .NET SDK 10 or newer); errors and warnings go to the Messages panel with their `CS` codes, and F5 runs the program in the Output window. Install the SDK with Options > Dependencies (`winget install Microsoft.DotNet.SDK.10` on Windows). The language server, the debugger and C# project templates are still to come.
+**C#** (0.2.21): `.cs` files are highlighted; F9 / Alt+F9 run `dotnet build` on the file's project (the nearest folder above it with a `.csproj`), or on the single file when there is no project (a file-based app, needs the .NET SDK 10 or newer); errors and warnings go to the Messages panel with their `CS` codes, and F5 runs the program in the Output window. Install the SDK with Options > Dependencies (`winget install Microsoft.DotNet.SDK.10` on Windows). Live errors and completion (window version) come from `csharp-ls` (Options > Dependencies installs it with `dotnet tool install -g csharp-ls`) for files inside a `.csproj` / `.sln` folder; a loose single `.cs` file gets highlighting and F9 but no live errors. The debugger and C# project templates are still to come.
 
 **Settings dialog** (window version): **Options > Settings...** (Alt+O E) has the main options in one place: where the Markdown preview opens, window style, Vim mode, check before run, font size and the dependencies check. Up/Down choose a row, Left/Right or Enter change it, a letter (P W V C F D) uses that row, Esc closes; each change is applied and remembered at once. The menu items and keys below still work.
 

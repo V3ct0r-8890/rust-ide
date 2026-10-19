@@ -193,8 +193,8 @@ impl Client {
 
     fn open(&mut self, path: PathBuf, text: String) -> Vec<Event> {
         let lang = Lang::from_path(Some(&path));
-        if matches!(lang, Lang::Plain | Lang::CSharp) {
-            return Vec::new(); // no language server for these (yet)
+        if lang == Lang::Plain {
+            return Vec::new();
         }
         let key = (lang, project_root(lang, &path));
         let mut events = Vec::new();
@@ -211,7 +211,11 @@ impl Client {
             }
         }
 
-        let language_id = if lang == Lang::Rust { "rust" } else { "python" };
+        let language_id = match lang {
+            Lang::Rust => "rust",
+            Lang::CSharp => "csharp",
+            _ => "python",
+        };
         let message = notification(
             "textDocument/didOpen",
             json!({
@@ -367,6 +371,12 @@ fn start_server(
             Vec::new(),
             "rust-analyzer",
         ),
+        Lang::CSharp => (
+            find_program(root, CSHARP_SERVERS)
+                .ok_or("csharp-ls not installed (see Options > Dependencies)")?,
+            Vec::new(),
+            "csharp-ls",
+        ),
         _ => {
             let program = find_program(root, PYTHON_SERVERS)
                 .ok_or("Python LSP not installed (see Options > Dependencies)")?;
@@ -453,10 +463,15 @@ const PYTHON_EXE: &str = "bin/python";
 pub fn find_program(root: &Path, names: &[&str]) -> Option<PathBuf> {
     let bin = if cfg!(windows) { "Scripts" } else { "bin" };
     let mut dirs: Vec<PathBuf> = venv_dir(root).map(|v| v.join(bin)).into_iter().collect();
+    // Tools installed for one project (dotnet tool install --tool-path .dotnet-tools).
+    dirs.extend(root.ancestors().map(|dir| dir.join(".dotnet-tools")));
     dirs.extend(platform::search_dirs());
     dirs.extend(python_user_scripts());
     names.iter().find_map(|name| platform::find_in(&dirs, name))
 }
+
+/// The C# language server (MIT; `dotnet tool install -g csharp-ls`).
+pub const CSHARP_SERVERS: &[&str] = &["csharp-ls"];
 
 /// The Python language servers this IDE can use, in order of preference.
 pub const PYTHON_SERVERS: &[&str] = &["basedpyright-langserver", "pyright-langserver"];
@@ -493,6 +508,17 @@ fn project_root(lang: Lang, file: &Path) -> PathBuf {
         return crate::runner::find_cargo_manifest(file)
             .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
             .unwrap_or(dir);
+    }
+    if lang == Lang::CSharp {
+        // The solution or project the file belongs to; csharp-ls loads it from here.
+        let has_project = |d: &Path| {
+            std::fs::read_dir(d).is_ok_and(|entries| {
+                entries.flatten().any(|e| {
+                    matches!(e.path().extension().and_then(|x| x.to_str()), Some("sln" | "slnx" | "csproj"))
+                })
+            })
+        };
+        return dir.ancestors().find(|d| has_project(d)).map(Path::to_path_buf).unwrap_or(dir);
     }
     let markers: &[&str] = match lang {
         Lang::Rust => &["Cargo.toml"],
@@ -758,6 +784,22 @@ mod tests {
         let dir = test_dir("lsp-python");
         let source = "v: list[int] = []\nn: int = \"oops\"\nv.\n";
         live_server(&dir.join("demo.py"), source, 2, 2, "append");
+    }
+
+    #[test]
+    #[ignore = "needs csharp-ls (dotnet tool install csharp-ls --tool-path .dotnet-tools); run with --ignored"]
+    fn csharp_ls_live() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("lsp-csharp");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("demo.csproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>\n",
+        )
+        .unwrap();
+        assert_eq!(project_root(Lang::CSharp, &dir.join("Program.cs")), dir);
+        let source = "var v = new List<int>();\nint n = \"oops\";\nv.\n";
+        live_server(&dir.join("Program.cs"), source, 2, 2, "Add");
     }
 
     #[test]

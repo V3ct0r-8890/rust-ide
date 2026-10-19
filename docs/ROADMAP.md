@@ -40,7 +40,7 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 |---|---|---|
 | 1 | Development environments for project sessions: variables (0.2.14), Python .venv (0.2.15) and Rust toolchain (0.2.16, picker 0.2.17) and sessions (0.2.18) are done, the rest is **next** | L |
 | 2 | Terminal version: the rest | L |
-| 3 | C# support: language server, debugger, templates (build / run / highlighting done in 0.2.21) | L |
+| 3 | C# support: debugger, templates (build / run / highlighting 0.2.21, language server 0.2.22) | L |
 
 ### 1. Development environments for project sessions - L (variables, Python .venv and Rust toolchain done, the rest is next)
 **Phase 1 is done in 0.2.14:** both groups of variables as plain `NAME=value` files
@@ -107,8 +107,10 @@ Suggested sub-steps, easiest first:
 raw `"""` strings, `#region`), F9 / Alt+F9 through `dotnet build` (the nearest `.csproj`, else the single
 file as a file-based app on .NET 10+), MSBuild messages (`file(line,col): error CS...`) in the Messages
 panel, F5 through `dotnet run`, and ".NET SDK 10" in Options > Dependencies. Both versions.
-- **Language server (next):** `csharp-ls` (MIT, `dotnet tool install -g csharp-ls`) for live errors and
-  completion; its project root is the nearest `.sln` / `.csproj`. Until then C# files get no LSP.
+- **Language server - done in 0.2.22:** `csharp-ls` (MIT, `dotnet tool install -g csharp-ls`, listed in
+  Options > Dependencies) for live errors and completion; its root is the nearest `.sln` / `.csproj` folder,
+  so loose single files get none. Live test: `dotnet tool install csharp-ls --tool-path .dotnet-tools` then
+  `cargo test csharp_ls_live -- --ignored`.
 - **Debugger:** `netcoredbg` (Samsung, MIT), which speaks the Debug Adapter Protocol like gdb and
   debugpy. Microsoft's own debugger (`vsdbg`) is not open source and is not used. Until then the IDE
   says "Debugging C# is not supported yet".

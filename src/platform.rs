@@ -167,11 +167,15 @@ pub fn search_dirs() -> Vec<PathBuf> {
     if let Some(home) = home_dir() {
         dirs.push(home.join(".cargo").join("bin"));
         dirs.push(home.join(".local").join("bin")); // pip --user, pipx
+        dirs.push(home.join(".dotnet").join("tools")); // dotnet tool install -g
     }
     if cfg!(windows) {
         // The saved PATH is current even when this process inherited an
         // older one (e.g. started from a shell opened before an install).
         dirs.extend(windows_saved_path().iter().cloned());
+        if let Some(files) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
+            dirs.push(files.join("dotnet"));
+        }
         if let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
             dirs.push(local.join("Microsoft").join("WinGet").join("Links"));
             // python.org installer default: %LOCALAPPDATA%\Programs\Python\PythonXY

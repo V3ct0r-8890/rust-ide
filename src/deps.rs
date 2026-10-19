@@ -127,6 +127,17 @@ pub fn check(os: Os) -> Vec<Dep> {
             .then(|| words("winget install --id Microsoft.DotNet.SDK.10 -e --accept-source-agreements --accept-package-agreements")),
     });
 
+    let here = std::env::current_dir().unwrap_or_default();
+    let has_dotnet = platform::find_program("dotnet").is_some();
+    deps.push(Dep {
+        name: "csharp-ls",
+        purpose: "live C# errors and completion (needs a .csproj or .sln)",
+        need: Need::Optional,
+        found: lsp::find_program(&here, lsp::CSHARP_SERVERS).map(|p| p.display().to_string()),
+        install: "dotnet tool install -g csharp-ls".into(),
+        auto: has_dotnet.then(|| words("dotnet tool install -g csharp-ls")),
+    });
+
     let has_rustup = platform::find_program("rustup").is_some();
     deps.push(Dep {
         name: "rust-analyzer",
@@ -138,7 +149,6 @@ pub fn check(os: Os) -> Vec<Dep> {
         auto: has_rustup.then(|| words("rustup component add rust-analyzer")),
     });
 
-    let here = std::env::current_dir().unwrap_or_default();
     let pyright = lsp::find_program(&here, lsp::PYTHON_SERVERS);
     let has_pipx = platform::find_program("pipx").is_some();
     let (install, auto) = match os {
