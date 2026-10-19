@@ -46,6 +46,7 @@ const SEARCH_INPUT: &str = "search-input";
 const EDITOR: &str = "editor";
 const HELP_SCROLL: &str = "help-scroll";
 const PREVIEW_SCROLL: &str = "preview-scroll";
+const DEPS_SCROLL: &str = "deps-scroll";
 
 /// Every keyboard shortcut, shown by F1. Grouped as (group, keys, action).
 const SHORTCUTS: &[(&str, &str, &str)] = &[
@@ -2946,7 +2947,14 @@ impl Ide {
         let dep = dialog.list.get(selected).filter(|d| d.missing());
         let can_install = dep.is_some_and(|d| d.auto.is_some()) && !busy;
         let install_text = dep.map(|d| d.install.clone());
-        match key {
+        // Keep the selected row in view: the rows are about the same height.
+        let scroll = if matches!(key, NavKey::Up | NavKey::Down | NavKey::Home | NavKey::End) && count > 1 {
+            let y = selected as f32 / (count - 1) as f32;
+            iced::widget::operation::snap_to(DEPS_SCROLL, scrollable::RelativeOffset { x: 0.0, y })
+        } else {
+            Task::none()
+        };
+        let task = match key {
             NavKey::Char('i') if can_install => self.update(Message::DepInstall(selected)),
             NavKey::Enter if can_install => self.update(Message::DepInstall(selected)),
             NavKey::Char('c') | NavKey::Enter => match install_text {
@@ -2957,7 +2965,8 @@ impl Ide {
             NavKey::Char('r') if !busy => self.update(Message::ShowDeps),
             NavKey::Char('s') => self.update(Message::ToggleStartupCheck(!self.check_at_startup)),
             _ => Task::none(),
-        }
+        };
+        Task::batch([scroll, task])
     }
 
     /// Alt+F8 / Alt+F7: jump to the next or previous Messages row.
@@ -3882,6 +3891,7 @@ impl Ide {
                 .direction(scrollable::Direction::Vertical(
                     scrollable::Scrollbar::new().width(10).scroller_width(10).margin(4),
                 ))
+                .id(DEPS_SCROLL)
                 .height(Length::Fill),
             container(text(message).color(TURBO_RED)).padding([0, 10]),
             container(
