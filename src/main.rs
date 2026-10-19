@@ -95,7 +95,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Window", "F6 / Shift+F6", "Next / previous window"),
     ("Window", "Alt+1 ... Alt+9", "Go to window 1-9"),
     ("Window", "Alt+0", "Window list (Window menu)"),
-    ("Window", "Alt+F3", "Close the window (press twice to discard changes)"),
+    ("Window", "Ctrl+F3", "Close the window (press twice to discard changes)"),
     ("Window", "Alt+F6 / Alt+P", "Markdown preview of a .md file: beside it, in a tab or in a window (Alt+W I chooses)"),
     ("Edit", "Ctrl+Z / Ctrl+Y", "Undo / redo (Ctrl+Shift+Z also redoes)"),
     ("Edit", "Tab / Shift+Tab", "Indent / unindent"),
@@ -472,7 +472,7 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
             let mut items = vec![
                 item("Next", 'n', "F6", Message::NextWindow),
                 item("Previous", 'p', "Shift+F6", Message::PrevWindow),
-                item("Close", 'c', "Alt+F3", Message::CloseWindow),
+                item("Close", 'c', "Ctrl+F3", Message::CloseWindow),
                 item(
                     if toggles.preview { "Markdown preview  [x]" } else { "Markdown preview  [ ]" },
                     'm',
@@ -3395,7 +3395,7 @@ impl Ide {
             return false;
         }
         let key = match command {
-            Discard::Close => "Alt+F3",
+            Discard::Close => "Ctrl+F3",
             Discard::Exit => "Alt+X",
         };
         let what = if command == Discard::Exit && self.modified_windows() > 1 {
@@ -4201,7 +4201,7 @@ fn shortcut(key: &Key, physical: key::Physical, modifiers: Modifiers) -> Option<
         Key::Named(key::Named::F9) if modifiers.alt() => Some(Message::SyntaxCheck),
         Key::Named(key::Named::F2) if modifiers.control() => Some(Message::OutputStop),
         Key::Named(key::Named::F2) => Some(Message::Save),
-        Key::Named(key::Named::F3) if modifiers.alt() => Some(Message::CloseWindow),
+        Key::Named(key::Named::F3) if modifiers.control() => Some(Message::CloseWindow),
         Key::Named(key::Named::F3) => Some(Message::Open),
         Key::Named(key::Named::F6) if modifiers.alt() => Some(Message::TogglePreview),
         Key::Named(key::Named::F6) if modifiers.shift() => Some(Message::PrevWindow),
@@ -5091,7 +5091,7 @@ mod window_tests {
         }
         send(&mut ide, [Message::SelectWindow(1), Message::Edit(Action::Edit(Edit::Insert('x')))]);
         send(&mut ide, [Message::CloseWindow]);
-        assert_eq!(ide.window_count(), 3, "first Alt+F3 only warns");
+        assert_eq!(ide.window_count(), 3, "first Ctrl+F3 only warns");
         send(&mut ide, [Message::CloseWindow]);
         assert_eq!(ide.window_names(), ["e.rs", "g.rs"]);
         assert_eq!(ide.path.as_deref(), Some(paths[2].as_path()), "the next window becomes active");
@@ -5119,7 +5119,8 @@ mod window_tests {
         let f = |n| Key::Named(n);
         assert!(matches!(shortcut(&f(key::Named::F6), physical, Modifiers::empty()), Some(Message::NextWindow)));
         assert!(matches!(shortcut(&f(key::Named::F6), physical, Modifiers::SHIFT), Some(Message::PrevWindow)));
-        assert!(matches!(shortcut(&f(key::Named::F3), physical, alt), Some(Message::CloseWindow)));
+        assert!(matches!(shortcut(&f(key::Named::F3), physical, Modifiers::CTRL), Some(Message::CloseWindow)));
+        assert!(!matches!(shortcut(&f(key::Named::F3), physical, alt), Some(Message::CloseWindow)), "Alt+F3 is left to other programs");
 
         let paths = files(&["j.rs", "k.rs"]);
         let mut ide = Ide::default();
