@@ -86,7 +86,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Run", "Alt+F5", "Show / hide the Output window (User screen)"),
     ("Run", "Ctrl+F2", "Program reset: stop the running program"),
     ("Run", "Enter", "In the Output window: send the typed input"),
-    ("Options", "Alt+O D", "Dependencies: Up/Down/Tab/PgUp/PgDn, I install, C copy, G guide, R re-check, S startup check"),
+    ("Options", "Alt+O D", "Dependencies: Up/Down/Tab (also reaches the buttons), I install, C copy, G guide, R re-check, S startup check"),
     ("Options", "Alt+O E", "Settings dialog: preview place, window style, Vim, check before run, line numbers, font size, dependencies"),
     ("Options", "Alt+O G", "General environment: proxy, PATH ... for everything the IDE starts (NAME=value file)"),
     ("Options", "Alt+O O", "Project environment: variables for this project (.rust-ide/env, overrides the general ones)"),
@@ -579,6 +579,8 @@ struct DepsDialog {
     checking: bool,
     installing: Option<&'static str>,
     message: String,
+    /// Tab focus on the bottom row instead of the list: 0 startup check, 1 guide, 2 re-check, 3 close.
+    button: Option<usize>,
 }
 
 #[derive(Default)]
@@ -1546,7 +1548,8 @@ impl Ide {
                     .into()
                 });
                 let selected = self.deps.as_ref().map_or(0, |d| d.selected).min(list.len().saturating_sub(1));
-                self.deps = Some(DepsDialog { list, selected, checking: false, installing: None, message });
+                let button = self.deps.as_ref().and_then(|d| d.button);
+                self.deps = Some(DepsDialog { list, selected, checking: false, installing: None, message, button });
                 Task::none()
             }
             Message::DepInstall(index) => {
@@ -1606,6 +1609,7 @@ impl Ide {
                     checking: true,
                     installing: None,
                     message: "Checking installed tools...".into(),
+                    button: None,
                 })
             }
         }
@@ -2942,13 +2946,43 @@ impl Ide {
         let Some(dialog) = &mut self.deps else { return Task::none() };
         let count = dialog.list.len();
         let busy = dialog.checking || dialog.installing.is_some();
-        match key {
-            NavKey::Up | NavKey::BackTab if count > 0 => dialog.selected = (dialog.selected + count - 1) % count,
-            NavKey::Down | NavKey::Tab if count > 0 => dialog.selected = (dialog.selected + 1) % count,
-            NavKey::PageUp => dialog.selected = dialog.selected.saturating_sub(4),
-            NavKey::PageDown => dialog.selected = (dialog.selected + 4).min(count.saturating_sub(1)),
-            NavKey::Home => dialog.selected = 0,
-            NavKey::End => dialog.selected = count.saturating_sub(1),
+        // Tab walks the rows, then the bottom controls, then round again.
+        match (key, dialog.button) {
+            (NavKey::Tab, None) if dialog.selected + 1 < count => dialog.selected += 1,
+            (NavKey::Tab, None) => dialog.button = Some(0),
+            (NavKey::Tab, Some(b)) if b < 3 => dialog.button = Some(b + 1),
+            (NavKey::Tab, Some(_)) => {
+                dialog.button = None;
+                dialog.selected = 0;
+            }
+            (NavKey::BackTab, None) if dialog.selected > 0 => dialog.selected -= 1,
+            (NavKey::BackTab, None) => dialog.button = Some(3),
+            (NavKey::BackTab, Some(0)) => {
+                dialog.button = None;
+                dialog.selected = count.saturating_sub(1);
+            }
+            (NavKey::BackTab, Some(b)) => dialog.button = Some(b - 1),
+            (NavKey::Left, Some(b)) => dialog.button = Some(b.saturating_sub(1)),
+            (NavKey::Right, Some(b)) => dialog.button = Some((b + 1).min(3)),
+            (NavKey::Up | NavKey::Down, Some(_)) => dialog.button = None,
+            (NavKey::Enter | NavKey::Char(' '), Some(b)) => {
+                return match b {
+                    0 => {
+                        let on = !self.check_at_startup;
+                        self.update(Message::ToggleStartupCheck(on))
+                    }
+                    1 => self.update(Message::OpenUrl(platform::INSTALL_GUIDE_URL)),
+                    2 if !busy => self.update(Message::ShowDeps),
+                    2 => Task::none(),
+                    _ => self.update(Message::CloseDeps),
+                };
+            }
+            (NavKey::Up, None) if count > 0 => dialog.selected = (dialog.selected + count - 1) % count,
+            (NavKey::Down, None) if count > 0 => dialog.selected = (dialog.selected + 1) % count,
+            (NavKey::PageUp, None) => dialog.selected = dialog.selected.saturating_sub(4),
+            (NavKey::PageDown, None) => dialog.selected = (dialog.selected + 4).min(count.saturating_sub(1)),
+            (NavKey::Home, None) => dialog.selected = 0,
+            (NavKey::End, None) => dialog.selected = count.saturating_sub(1),
             _ => {}
         }
         let selected = dialog.selected;
@@ -3876,18 +3910,27 @@ impl Ide {
         } else {
             dialog.message.clone()
         };
+        let focus = dialog.button;
         let buttons = row![
-            checkbox(self.check_at_startup)
+            container(checkbox(self.check_at_startup)
                 .label("Check at startup")
                 .on_toggle(Message::ToggleStartupCheck)
                 .style(|theme, status| iced::widget::checkbox::Style {
                     text_color: Some(Color::BLACK),
                     ..iced::widget::checkbox::primary(theme, status)
-                }),
+                }))
+            .padding(2)
+            .style(move |_| {
+                if focus == Some(0) {
+                    container::Style::default().background(TURBO_CYAN)
+                } else {
+                    container::Style::default()
+                }
+            }),
             Space::new().width(Length::Fill),
-            small_button("Install guide on GitHub", Some(Message::OpenUrl(platform::INSTALL_GUIDE_URL))),
-            small_button("Re-check", (!busy).then_some(Message::ShowDeps)),
-            small_button("Close", Some(Message::CloseDeps)),
+            small_button_focus("Install guide on GitHub", Some(Message::OpenUrl(platform::INSTALL_GUIDE_URL)), focus == Some(1)),
+            small_button_focus("Re-check", (!busy).then_some(Message::ShowDeps), focus == Some(2)),
+            small_button_focus("Close", Some(Message::CloseDeps), focus == Some(3)),
         ]
         .spacing(8);
 
@@ -3903,7 +3946,7 @@ impl Ide {
                 .height(Length::Fill),
             container(text(message).color(TURBO_RED)).padding([0, 10]),
             container(
-                text(" Up/Down select   I install   C copy   G guide   R re-check   S startup check   Esc close")
+                text(" Up/Down/Tab select   I install   C copy   G guide   R re-check   S startup check   Esc close")
                     .color(TURBO_DARK_GRAY),
             )
             .padding([4, 10]),
@@ -4488,15 +4531,21 @@ fn help_screen() -> Element<'static, Message> {
 
 /// A Turbo-style dialog button; disabled when `message` is None.
 fn small_button(label: &str, message: Option<Message>) -> Element<'_, Message> {
+    small_button_focus(label, message, false)
+}
+
+/// A small button; `focused` marks the one Tab has reached (cyan with a black frame).
+fn small_button_focus(label: &str, message: Option<Message>, focused: bool) -> Element<'_, Message> {
     let enabled = message.is_some();
     button(text(format!(" {label} ")).color(if enabled { Color::BLACK } else { TURBO_DARK_GRAY }))
         .padding([1, 6])
         .on_press_maybe(message)
         .style(move |_, status| button::Style {
             background: Some(Background::Color(
-                if enabled && matches!(status, button::Status::Hovered) { TURBO_CYAN } else { TURBO_GREEN },
+                if focused || (enabled && matches!(status, button::Status::Hovered)) { TURBO_CYAN } else { TURBO_GREEN },
             )),
             text_color: Color::BLACK,
+            border: if focused { iced::Border::default().color(Color::BLACK).width(2) } else { iced::Border::default() },
             ..button::Style::default()
         })
         .into()
@@ -4767,6 +4816,7 @@ mod keyboard_tests {
             checking: false,
             installing: None,
             message: String::new(),
+            button: None,
         });
         send(&mut ide, [Message::Nav(NavKey::Down)]);
         assert_eq!(ide.deps.as_ref().map(|d| d.selected), Some(1));
@@ -4776,8 +4826,18 @@ mod keyboard_tests {
         assert_eq!(ide.deps.as_ref().map(|d| d.selected), Some(0), "wraps around");
         send(&mut ide, [Message::Nav(NavKey::Tab)]);
         assert_eq!(ide.deps.as_ref().map(|d| d.selected), Some(1), "Tab moves down");
-        send(&mut ide, [Message::Nav(NavKey::BackTab), Message::Nav(NavKey::BackTab)]);
-        assert_eq!(ide.deps.as_ref().map(|d| d.selected), Some(1), "Shift+Tab moves up and wraps");
+        send(&mut ide, [Message::Nav(NavKey::BackTab)]);
+        assert_eq!(ide.deps.as_ref().map(|d| d.selected), Some(0), "Shift+Tab moves up");
+        send(&mut ide, [Message::Nav(NavKey::BackTab)]);
+        assert_eq!(ide.deps.as_ref().map(|d| d.button), Some(Some(3)), "Shift+Tab from the top reaches Close");
+        send(&mut ide, [Message::Nav(NavKey::BackTab), Message::Nav(NavKey::BackTab), Message::Nav(NavKey::BackTab)]);
+        assert_eq!(ide.deps.as_ref().map(|d| d.button), Some(Some(0)));
+        send(&mut ide, [Message::Nav(NavKey::BackTab)]);
+        assert_eq!(ide.deps.as_ref().map(|d| (d.button, d.selected)), Some((None, 1)), "back to the last row");
+        send(&mut ide, [Message::Nav(NavKey::Tab), Message::Nav(NavKey::Tab), Message::Nav(NavKey::Tab), Message::Nav(NavKey::Tab)]);
+        assert_eq!(ide.deps.as_ref().map(|d| d.button), Some(Some(3)), "Tab reaches the buttons");
+        send(&mut ide, [Message::Nav(NavKey::Enter)]);
+        assert!(ide.deps.is_none(), "Enter on Close closes the dialog");
     }
 
     #[test]
