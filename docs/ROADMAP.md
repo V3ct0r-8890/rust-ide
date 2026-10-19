@@ -36,7 +36,7 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 
 | # | Item | Effort |
 |---|---|---|
-| 1 | Development environments for project sessions: variables (0.2.14), Python .venv (0.2.15) and Rust toolchain (0.2.16) are done, the rest is **next** | L |
+| 1 | Development environments for project sessions: variables (0.2.14), Python .venv (0.2.15) and Rust toolchain (0.2.16, picker 0.2.17) are done, the rest is **next** | L |
 | 2 | Line numbers in the window version | M |
 | 3 | Terminal version: the rest | L |
 | 4 | C# support | L |
@@ -48,7 +48,7 @@ wins; `$NAME` / `${NAME}` / `%NAME%` expand), applied to builds, runs, the debug
 servers and tool checks, with Options > General environment / Project environment / Show
 environment in both front ends. Format decision taken: plain `NAME=value`, not TOML. **Phase 2 (0.2.15):** Options > Python .venv setup creates the project's `.venv`, installs its
 requirements, and F5 / syntax check use it. **Phase 3 (0.2.16):** Options > Rust toolchain
-chooses the toolchain per project (`RUSTUP_TOOLCHAIN` in the project file; `rust-toolchain.toml`
+chooses the toolchain per project from a list of the installed ones (0.2.17; bare names get the GNU host on Windows; `RUSTUP_TOOLCHAIN` in the project file; `rust-toolchain.toml`
 is honoured), shown in the status bar; the target is not a separate setting yet (set
 `CARGO_BUILD_TARGET` in the project file). Not done yet:
 the combined dialog with "where each value comes from", and everything below.

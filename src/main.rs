@@ -91,7 +91,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Options", "Alt+O O", "Project environment: variables for this project (.rust-ide/env, overrides the general ones)"),
     ("Options", "Alt+O X", "Show environment: the general and project variables that apply now"),
     ("Options", "Alt+O Y", "Python .venv setup: create .venv in the project and install requirements.txt (or the project)"),
-    ("Options", "Alt+O U", "Rust toolchain: choose it for this project (stable, nightly, 1.85.0 ...; empty = default)"),
+    ("Options", "Alt+O U", "Rust toolchain: pick one of the installed toolchains for this project (Up/Down, Enter, O other name)"),
     ("Options", "Alt+O V", "Vim mode on / off"),
     ("Options", "Alt+O C", "Check the syntax before compile / run on / off"),
     ("Options", "Ctrl+= / Ctrl+- / Ctrl+0", "Editor font larger / smaller / default size (also Alt+O B / S / R)"),
@@ -412,7 +412,7 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
                 item("Project environment...", 'o', "", Message::EditEnv(false)),
                 item("Show environment", 'x', "", Message::ShowEnv),
                 item("Python .venv setup", 'y', "", Message::PythonSetup),
-                item("Rust toolchain...", 'u', "", Message::OpenSearch(SearchMode::Toolchain)),
+                item("Rust toolchain...", 'u', "", Message::OpenToolchains),
                 item(if toggles.vim { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
                 item(
                     if toggles.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
@@ -604,6 +604,8 @@ struct Ide {
     untitled_ext: Option<&'static str>,
     language: Option<LanguageDialog>,
     settings: Option<SettingsDialog>,
+    /// Options > Rust toolchain...: the installed toolchains to pick from.
+    toolchains: Option<ToolchainDialog>,
     project: Option<ProjectDialog>,
     window_style: WindowStyle,
     /// Settings changes are written to the settings file (true in the real program).
@@ -670,6 +672,12 @@ struct SearchBar {
     query: String,
     replacement: String,
     case: bool,
+}
+
+/// Options > Rust toolchain...: one row per choice, then "Other name...".
+struct ToolchainDialog {
+    choices: Vec<rust_ide::env::ToolchainChoice>,
+    selected: usize,
 }
 
 /// Options > Settings...: the main options in one dialog.
@@ -825,6 +833,10 @@ enum Message {
     GoToCursor,
     AddWatch,
     SetToolchain,
+    OpenToolchains,
+    ToolchainsLoaded(Vec<String>),
+    /// Row of the toolchain dialog: a click or Enter on it.
+    ToolchainPick(usize),
     ClearWatches,
     Debug(u64, dap::Event),
 }
@@ -1250,6 +1262,38 @@ impl Ide {
                 }
                 self.close_search()
             }
+            Message::OpenToolchains => {
+                self.status = "Looking for installed Rust toolchains ...".into();
+                Task::perform(platform::blocking(rust_ide::env::installed_toolchains), Message::ToolchainsLoaded)
+            }
+            Message::ToolchainsLoaded(installed) => {
+                let choices = rust_ide::env::toolchain_choices(&installed, &self.project_dir());
+                let selected = choices.iter().position(|c| c.current).unwrap_or(0);
+                self.toolchains = Some(ToolchainDialog { choices, selected });
+                self.status = if installed.is_empty() { "rustup found no toolchains (is rustup installed?)".into() } else { String::new() };
+                Task::none()
+            }
+            Message::ToolchainPick(row) => {
+                let Some(dialog) = &mut self.toolchains else { return Task::none() };
+                dialog.selected = row;
+                match dialog.choices.get(row).cloned() {
+                    Some(choice) => {
+                        let name = (!choice.name.is_empty()).then_some(choice.name.as_str());
+                        self.status = match rust_ide::env::set_rust_toolchain(&self.project_dir(), name) {
+                            Ok(message) if choice.usable => message,
+                            Ok(message) => format!("{message} - warning: {}", choice.note),
+                            Err(e) => e,
+                        };
+                        self.toolchains = None;
+                        iced::widget::operation::focus(EDITOR)
+                    }
+                    None => {
+                        // The row after the list: type a name instead.
+                        self.toolchains = None;
+                        self.open_search(SearchMode::Toolchain)
+                    }
+                }
+            }
             Message::SetToolchain => {
                 let name = self.search.as_ref().map(|b| b.query.trim().to_string()).unwrap_or_default();
                 let result = rust_ide::env::set_rust_toolchain(&self.project_dir(), (!name.is_empty()).then_some(name.as_str()));
@@ -1333,6 +1377,10 @@ impl Ide {
                 }
                 if self.settings.is_some() {
                     self.settings = None;
+                    return iced::widget::operation::focus(EDITOR);
+                }
+                if self.toolchains.is_some() {
+                    self.toolchains = None;
                     return iced::widget::operation::focus(EDITOR);
                 }
                 if self.project.is_some() {
@@ -2303,6 +2351,24 @@ impl Ide {
         Task::none()
     }
 
+    fn toolchain_key(&mut self, key: NavKey) -> Task<Message> {
+        let Some(dialog) = &mut self.toolchains else { return Task::none() };
+        let rows = dialog.choices.len() + 1;
+        match key {
+            NavKey::Up => dialog.selected = (dialog.selected + rows - 1) % rows,
+            NavKey::Down | NavKey::Tab => dialog.selected = (dialog.selected + 1) % rows,
+            NavKey::Home => dialog.selected = 0,
+            NavKey::End => dialog.selected = rows - 1,
+            NavKey::Enter | NavKey::Char(' ') => {
+                let row = dialog.selected;
+                return self.update(Message::ToolchainPick(row));
+            }
+            NavKey::Char('o') => return self.update(Message::ToolchainPick(rows - 1)),
+            _ => {}
+        }
+        Task::none()
+    }
+
     /// Changes the setting of a row: `dir` is -1 / +1 (Left / Right) or 0 (Enter, click).
     fn settings_act(&mut self, row: usize, dir: i8) -> Task<Message> {
         match row {
@@ -2646,6 +2712,9 @@ impl Ide {
         }
         if self.settings.is_some() {
             return self.settings_key(key);
+        }
+        if self.toolchains.is_some() {
+            return self.toolchain_key(key);
         }
         if self.project.is_some() {
             return self.project_key(key);
@@ -3416,6 +3485,7 @@ impl Ide {
             || self.deps.is_some()
             || self.language.is_some()
             || self.settings.is_some()
+            || self.toolchains.is_some()
             || self.project.is_some();
         let vim_mode = self.vim.as_ref().map(|v| (v.mode, v.command.is_some()));
         let editor = text_editor(&self.content)
@@ -3514,6 +3584,9 @@ impl Ide {
         }
         if let Some(dialog) = &self.settings {
             layers = layers.push(self.settings_dialog(dialog));
+        }
+        if let Some(dialog) = &self.toolchains {
+            layers = layers.push(toolchain_dialog(dialog));
         }
         if let Some(dialog) = &self.project {
             layers = layers.push(project_dialog(dialog));
@@ -4140,6 +4213,58 @@ fn dropdown(menu: Menu, toggles: Toggles, selected: usize, windows: &[String], a
 }
 
 /// A label with its hotkey letter in red, Turbo Pascal style.
+/// The toolchain picker: rows for the default and every installed toolchain,
+/// each with a hint, and "Other name..." at the end.
+fn toolchain_dialog(dialog: &ToolchainDialog) -> Element<'static, Message> {
+    let row_button = |index: usize, name: String, note: String, mark: &'static str, usable: bool| {
+        let chosen = index == dialog.selected;
+        let note_color = if usable { TURBO_DARK_GRAY } else { TURBO_RED };
+        button(column![
+            row![text(name).color(Color::BLACK), Space::new().width(Length::Fill), text(mark).color(Color::BLACK)],
+            text(note).color(note_color).size(13),
+        ])
+        .width(Length::Fill)
+        .padding([3, 10])
+        .on_press(Message::ToolchainPick(index))
+        .style(move |_, status| button::Style {
+            background: Some(Background::Color(
+                if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
+            )),
+            ..button::Style::default()
+        })
+    };
+    let mut rows: Vec<Element<'static, Message>> = dialog
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(index, c)| {
+            let name = if c.name.is_empty() { "Default".to_string() } else { c.name.clone() };
+            row_button(index, name, c.note.clone(), if c.current { "(*)" } else { "( )" }, c.usable).into()
+        })
+        .collect();
+    rows.push(row_button(dialog.choices.len(), "Other name...".into(), "type a toolchain name yourself".into(), "", true).into());
+    let body = column![
+        container(text(" Rust toolchain of this project ").color(Color::WHITE))
+            .width(Length::Fill)
+            .padding(2)
+            .style(|_| container::Style::default().background(TURBO_BLUE)),
+        scrollable(column(rows).padding(8)).height(Length::Shrink),
+        container(
+            text(" Up/Down  Enter picks  O other name  Esc closes. Install more with: rustup toolchain install <name>")
+                .color(Color::BLACK)
+                .size(13)
+        )
+        .padding(10),
+    ];
+    opaque(
+        container(container(body).width(640).style(|_| container::Style {
+            border: iced::Border::default().color(Color::BLACK).width(1),
+            ..container::Style::default().background(TURBO_GRAY)
+        }))
+        .center(Length::Fill),
+    )
+}
+
 fn hotkey_label(label: &str, hotkey: char) -> Element<'static, Message> {
     let at = label.char_indices().find(|(_, c)| c.eq_ignore_ascii_case(&hotkey)).map(|(i, _)| i);
     match at {
@@ -4964,16 +5089,36 @@ mod language_tests {
         assert!(menu_items(Menu::Options, ide.toggles(), &[], 0).iter().any(|i| i.label == "Rust toolchain..."));
         assert_eq!(ide.toolchain_label(), "  Rust default");
 
+        // The picker: default first, installed ones after, "Other name..." last.
+        let gnu = "stable-x86_64-pc-windows-gnu".to_string();
+        let other = "nightly-x86_64-pc-windows-msvc".to_string();
+        send(&mut ide, [Message::ToolchainsLoaded(vec![gnu.clone(), other.clone()])]);
+        assert_eq!(ide.toolchains.as_ref().map(|d| (d.choices.len(), d.selected)), Some((3, 0)), "the default is current");
+        let _ = toolchain_dialog(ide.toolchains.as_ref().unwrap());
+        send(&mut ide, [Message::Nav(NavKey::Down), Message::Nav(NavKey::Enter)]);
+        assert!(ide.toolchains.is_none(), "picking closes the dialog");
+        assert_eq!(ide.toolchain_label(), format!("  Rust {gnu}"));
+        send(&mut ide, [Message::ToolchainsLoaded(vec![gnu.clone(), other.clone()])]);
+        assert_eq!(ide.toolchains.as_ref().map(|d| d.selected), Some(1), "starts on the current choice");
+        send(&mut ide, [Message::Nav(NavKey::Char('o'))]);
+        assert!(ide.toolchains.is_none() && ide.search.is_some(), "Other name opens the typed prompt");
+        send(&mut ide, [Message::CloseSearch]);
+        send(&mut ide, [Message::ToolchainsLoaded(vec![gnu.clone()]), Message::Escape]);
+        assert!(ide.toolchains.is_none(), "Esc closes it");
+        send(&mut ide, [Message::ToolchainsLoaded(vec![gnu.clone()]), Message::ToolchainPick(0)]);
+        assert_eq!(ide.toolchain_label(), "  Rust default", "the Default row clears the choice");
+
         send(&mut ide, [Message::OpenSearch(SearchMode::Toolchain)]);
         send(&mut ide, [Message::SearchQuery("bad name!".into()), Message::SetToolchain]);
         assert!(ide.status.contains("not a toolchain name") && ide.search.is_some(), "{}", ide.status);
         send(&mut ide, [Message::SearchQuery("nightly".into()), Message::SetToolchain]);
         assert!(ide.search.is_none(), "the bar closes once it is set");
-        assert_eq!(ide.toolchain_label(), "  Rust nightly");
-        assert!(std::fs::read_to_string(root.join(".rust-ide").join("env")).unwrap().contains("RUSTUP_TOOLCHAIN=nightly"));
+        let nightly = rust_ide::env::qualify_toolchain("nightly", cfg!(windows));
+        assert_eq!(ide.toolchain_label(), format!("  Rust {nightly}"));
+        assert!(std::fs::read_to_string(root.join(".rust-ide").join("env")).unwrap().contains(&format!("RUSTUP_TOOLCHAIN={nightly}")));
 
         send(&mut ide, [Message::OpenSearch(SearchMode::Toolchain)]);
-        assert_eq!(ide.search.as_ref().map(|b| b.query.as_str()), Some("nightly"), "starts from the current choice");
+        assert_eq!(ide.search.as_ref().map(|b| b.query.as_str()), Some(nightly.as_str()), "starts from the current choice");
         send(&mut ide, [Message::SearchQuery(String::new()), Message::SetToolchain]);
         assert_eq!(ide.toolchain_label(), "  Rust default");
         ide.path = Some(root.join("notes.py"));

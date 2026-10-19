@@ -77,6 +77,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Open(dialog) => draw_open(frame, dialog),
         Mode::Help { scroll } => draw_help(frame, *scroll),
         Mode::Language { selected, startup } => draw_language(frame, *selected, *startup),
+        Mode::Toolchains { choices, selected } => draw_toolchains(frame, choices, *selected),
         Mode::Project(dialog) => draw_project(frame, dialog),
     }
 }
@@ -378,7 +379,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Options > Project environment", "Edit the variables of this project (.rust-ide/env; they override the general ones)"),
     ("Options > Show environment", "List the variables that apply now"),
     ("Options > Python .venv setup", "Create .venv in the project and install requirements.txt (or the project)"),
-    ("Options > Rust toolchain", "Choose the Rust toolchain of this project (stable, nightly, 1.85.0; empty = default); shown in the status line"),
+    ("Options > Rust toolchain", "Pick the Rust toolchain of this project from the installed ones (Up/Down, Enter, O other name); shown in the status line. On Windows use the -gnu ones"),
     ("Options > Check before run", "F9 / F5 look for errors first and stop if there are any (remembered)"),
     ("Mouse", "Click a menu, a menu item, a tab or a place in the text; the wheel moves the cursor (start with --no-mouse to select text with the mouse)"),
     ("Ctrl+G", "Go to line number"),
@@ -478,6 +479,32 @@ fn draw_language(frame: &mut Frame, selected: usize, startup: bool) {
     frame.render_widget(Paragraph::new(format!(" Up/Down  Enter OK  R P T M / 1-4  {escape}")).style(BAR), hint);
 }
 
+fn draw_toolchains(frame: &mut Frame, choices: &[rust_ide::env::ToolchainChoice], selected: usize) {
+    let height = (choices.len() as u16 + 1) * 2 + 4;
+    let area = centered(frame.area(), 78, height);
+    frame.render_widget(Clear, area);
+    let block = dialog("Rust toolchain of this project");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let mut lines: Vec<Line> = Vec::new();
+    let rows = choices.len() + 1;
+    for index in 0..rows {
+        let chosen = index == selected;
+        let style = if chosen { CHOSEN } else { BAR };
+        let (name, note, mark, usable) = match choices.get(index) {
+            Some(c) => (if c.name.is_empty() { "Default" } else { c.name.as_str() }, c.note.as_str(), if c.current { "(*)" } else { "( )" }, c.usable),
+            None => ("Other name...", "type a toolchain name yourself", "", true),
+        };
+        let pad = (inner.width as usize).saturating_sub(name.chars().count() + mark.len() + 2);
+        lines.push(Line::from(Span::styled(format!(" {name}{}{mark} ", " ".repeat(pad)), style)));
+        let note_style = if chosen { CHOSEN } else if usable { BAR.fg(Color::Rgb(60, 60, 60)) } else { BAR.fg(DARK_RED) };
+        lines.push(Line::from(Span::styled(format!("   {note}"), note_style)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(" Up/Down  Enter picks  O other name  Esc cancels  (install: rustup toolchain install <name>)"));
+    frame.render_widget(Paragraph::new(lines).style(BAR), inner);
+}
+
 fn draw_help(frame: &mut Frame, scroll: usize) {
     let area = centered(frame.area(), 76, 22);
     frame.render_widget(Clear, area);
@@ -566,6 +593,16 @@ mod tests {
         let text = screen(&app, 40, 8);
         let rows: Vec<&str> = text.lines().collect();
         assert!(rows[1].starts_with("1 a") && rows[2].starts_with("2 b") && rows[3].starts_with("3 c"), "{text}");
+    }
+
+    #[test]
+    fn draws_the_toolchain_picker() {
+        let mut app = App::new(&[]);
+        app.open_toolchains(&["stable-x86_64-pc-windows-gnu".to_string(), "nightly-x86_64-pc-windows-msvc".to_string()]);
+        let text = screen(&app, 100, 30);
+        for expected in ["Rust toolchain of this project", "Default", "stable-x86_64-pc-windows-gnu", "nightly-x86_64-pc-windows-msvc", "Other name...", "rustup toolchain install"] {
+            assert!(text.contains(expected), "missing {expected:?} in\n{text}");
+        }
     }
 
     #[test]

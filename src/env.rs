@@ -385,6 +385,97 @@ pub fn set_project_var(dir: &Path, name: &str, value: Option<&str>) -> std::io::
     Ok(path)
 }
 
+/// A bare channel (`stable`, `nightly-2025-01-01`, `1.85.0`) names the MSVC
+/// toolchain on a Windows machine whose rustup defaults to MSVC, which needs
+/// Visual Studio. On Windows the IDE uses the GNU one, so the host is added.
+pub fn qualify_toolchain(name: &str, windows: bool) -> String {
+    let has_host = ["x86_64", "aarch64", "i686"].iter().any(|h| name.contains(h));
+    let channel = name.starts_with("stable") || name.starts_with("beta") || name.starts_with("nightly") || name.starts_with(|c: char| c.is_ascii_digit());
+    if windows && channel && !has_host { format!("{name}-x86_64-pc-windows-gnu") } else { name.to_string() }
+}
+
+/// One line of the toolchain list: what to store, a hint for the user, and
+/// whether it can build here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolchainChoice {
+    /// The `RUSTUP_TOOLCHAIN` value; empty is the rustup default.
+    pub name: String,
+    pub note: String,
+    pub usable: bool,
+    pub current: bool,
+}
+
+/// The names in the output of `rustup toolchain list`.
+fn parse_toolchain_list(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with("no installed"))
+        .filter_map(|l| l.split_whitespace().next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The installed toolchains (slow: starts `rustup`; run it off the UI thread).
+pub fn installed_toolchains() -> Vec<String> {
+    let Some(rustup) = platform::find_program("rustup") else { return Vec::new() };
+    let output = platform::hidden_command(rustup).args(["toolchain", "list"]).output();
+    output.map(|o| parse_toolchain_list(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
+}
+
+/// A hint about a toolchain; `usable` is false when it cannot link on this machine.
+pub fn toolchain_note(name: &str, windows: bool, has_link: bool, has_gcc: bool) -> (String, bool) {
+    if windows && name.contains("windows-msvc") {
+        return if has_link {
+            ("MSVC: uses Visual Studio's linker".to_string(), true)
+        } else {
+            ("MSVC: needs Visual Studio's link.exe, which is not installed".to_string(), false)
+        };
+    }
+    if windows && name.contains("windows-gnu") {
+        return if has_gcc {
+            ("GNU: links with MinGW (recommended on Windows)".to_string(), true)
+        } else {
+            ("GNU: MinGW gcc was not found (see Options > Dependencies)".to_string(), false)
+        };
+    }
+    let kind = if name.starts_with("stable") {
+        "stable release"
+    } else if name.starts_with("beta") {
+        "beta release"
+    } else if name.starts_with("nightly") {
+        "nightly: newest features, can break"
+    } else if name.starts_with(|c: char| c.is_ascii_digit()) {
+        "a pinned version"
+    } else {
+        "a custom toolchain"
+    };
+    (kind.to_string(), true)
+}
+
+/// The list for the picker: the default first, then every installed toolchain.
+pub fn toolchain_choices(installed: &[String], dir: &Path) -> Vec<ToolchainChoice> {
+    let chosen = effective(Some(dir))
+        .into_iter()
+        .find(|(k, _)| key(k) == key("RUSTUP_TOOLCHAIN"))
+        .map(|(_, v)| v.trim().to_string())
+        .unwrap_or_default();
+    let (has_link, has_gcc) = (platform::find_program("link").is_some(), platform::find_program("gcc").is_some());
+    let mut choices = vec![ToolchainChoice {
+        name: String::new(),
+        note: "rustup's default (or the project's rust-toolchain.toml)".to_string(),
+        usable: true,
+        current: chosen.is_empty(),
+    }];
+    for name in installed {
+        let (note, usable) = toolchain_note(name, cfg!(windows), has_link, has_gcc);
+        choices.push(ToolchainChoice { name: name.clone(), note, usable, current: *name == chosen });
+    }
+    // A choice stored earlier that is no longer installed stays visible.
+    if !chosen.is_empty() && !installed.contains(&chosen) {
+        choices.push(ToolchainChoice { name: chosen, note: "not installed (rustup toolchain install ...)".to_string(), usable: false, current: true });
+    }
+    choices
+}
+
 /// Chooses the Rust toolchain of the project (`None` goes back to the default).
 pub fn set_rust_toolchain(dir: &Path, name: Option<&str>) -> Result<String, String> {
     if let Some(name) = name {
@@ -392,6 +483,8 @@ pub fn set_rust_toolchain(dir: &Path, name: Option<&str>) -> Result<String, Stri
             return Err(format!("\"{name}\" is not a toolchain name (examples: stable, nightly, 1.85.0)"));
         }
     }
+    let qualified = name.map(|n| qualify_toolchain(n, cfg!(windows)));
+    let name = qualified.as_deref();
     set_project_var(dir, "RUSTUP_TOOLCHAIN", name).map_err(|e| format!("Cannot write the project environment: {e}"))?;
     Ok(match name {
         Some(name) => format!("Rust toolchain of {}: {name}", project_root(dir).display()),
@@ -556,14 +649,20 @@ mod tests {
 
         // The IDE's own choice wins over the file, keeps other lines and can be removed.
         set_project_var(&root, "KEEP", Some("1")).unwrap();
+        let beta = qualify_toolchain("beta", cfg!(windows));
+        let nightly = qualify_toolchain("nightly", cfg!(windows));
         set_rust_toolchain(&root, Some("beta")).unwrap();
-        assert_eq!(rust_toolchain(&src), Some(("beta".into(), "RUSTUP_TOOLCHAIN in the environment".into())));
-        assert_eq!(toolchain_label(&src), "Rust beta");
+        assert_eq!(rust_toolchain(&src), Some((beta.clone(), "RUSTUP_TOOLCHAIN in the environment".into())));
+        assert_eq!(toolchain_label(&src), format!("Rust {beta}"));
         set_rust_toolchain(&root, Some("nightly")).unwrap();
         let file = std::fs::read_to_string(project_path(&root)).unwrap();
         assert_eq!(file.matches("RUSTUP_TOOLCHAIN=").count(), 1, "{file}");
-        assert!(file.contains("KEEP=1") && file.contains("RUSTUP_TOOLCHAIN=nightly"), "{file}");
-        assert!(describe(Some(&src)).contains("# Rust toolchain: nightly"));
+        assert!(file.contains("KEEP=1") && file.contains(&format!("RUSTUP_TOOLCHAIN={nightly}")), "{file}");
+        assert!(describe(Some(&src)).contains(&format!("# Rust toolchain: {nightly}")));
+        // The picker marks the stored choice and keeps one that is not installed.
+        let choices = toolchain_choices(&["stable-x86_64-pc-windows-gnu".to_string()], &src);
+        assert!(!choices[0].current && choices[0].name.is_empty(), "the default is not the current one");
+        assert!(choices.iter().any(|c| c.name == nightly && c.current && !c.usable), "{choices:?}");
         set_rust_toolchain(&root, None).unwrap();
         assert!(!std::fs::read_to_string(project_path(&root)).unwrap().contains("RUSTUP_TOOLCHAIN="));
         assert_eq!(rust_toolchain(&src).unwrap().0, "1.85.0");
@@ -571,6 +670,30 @@ mod tests {
         assert!(set_rust_toolchain(&root, Some("bad name; x")).is_err());
         assert!(valid_toolchain("stable-x86_64-pc-windows-gnu") && !valid_toolchain(""));
         unsafe { std::env::remove_var("RUST_IDE_GENERAL_ENV_FILE") };
+    }
+
+    #[test]
+    fn toolchain_names_lists_and_notes() {
+        let list = "stable-x86_64-pc-windows-gnu (default)\nnightly-x86_64-pc-windows-msvc\n\n1.85.0-x86_64-pc-windows-gnu (active)\n";
+        assert_eq!(
+            parse_toolchain_list(list),
+            ["stable-x86_64-pc-windows-gnu", "nightly-x86_64-pc-windows-msvc", "1.85.0-x86_64-pc-windows-gnu"]
+        );
+        assert!(parse_toolchain_list("no installed toolchains\n").is_empty());
+
+        assert_eq!(qualify_toolchain("stable", true), "stable-x86_64-pc-windows-gnu");
+        assert_eq!(qualify_toolchain("nightly-2025-01-01", true), "nightly-2025-01-01-x86_64-pc-windows-gnu");
+        assert_eq!(qualify_toolchain("1.85.0", true), "1.85.0-x86_64-pc-windows-gnu");
+        assert_eq!(qualify_toolchain("stable-x86_64-pc-windows-msvc", true), "stable-x86_64-pc-windows-msvc", "a full name is kept");
+        assert_eq!(qualify_toolchain("stable", false), "stable", "only Windows adds the host");
+        assert_eq!(qualify_toolchain("my-custom", true), "my-custom");
+
+        assert!(!toolchain_note("stable-x86_64-pc-windows-msvc", true, false, true).1, "no link.exe");
+        assert!(toolchain_note("stable-x86_64-pc-windows-msvc", true, true, true).1);
+        assert!(toolchain_note("stable-x86_64-pc-windows-gnu", true, false, true).0.contains("recommended"));
+        assert!(!toolchain_note("stable-x86_64-pc-windows-gnu", true, false, false).1, "no gcc");
+        assert!(toolchain_note("nightly-x86_64-unknown-linux-gnu", false, false, true).0.contains("nightly"));
+        assert!(toolchain_note("1.85.0-x86_64-unknown-linux-gnu", false, false, true).0.contains("pinned"));
     }
 
     #[test]

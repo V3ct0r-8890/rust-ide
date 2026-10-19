@@ -137,6 +137,9 @@ pub enum Mode {
     Language { selected: usize, startup: bool },
     /// File > New project: language, size, name and folder.
     Project(ProjectDialog),
+    /// Options > Rust toolchain: the installed toolchains to pick from (the row
+    /// after the last one asks for a name).
+    Toolchains { choices: Vec<rust_ide::env::ToolchainChoice>, selected: usize },
 }
 
 pub const PROJECT_LANG: usize = 0;
@@ -333,6 +336,7 @@ impl App {
             Mode::Open(_) => self.open_key(key),
             Mode::Language { .. } => self.language_key(key),
             Mode::Project(_) => self.project_key(key),
+            Mode::Toolchains { .. } => self.toolchain_key(key),
             Mode::Help { scroll } => {
                 match key.code {
                     KeyCode::Up => *scroll = scroll.saturating_sub(1),
@@ -520,8 +524,9 @@ impl App {
                 return Effect::PythonSetup(self.project_dir());
             }
             Action::RustToolchain => {
-                let current = rust_ide::env::rust_toolchain(&self.project_dir()).map(|(name, _)| name).unwrap_or_default();
-                self.mode = Mode::Prompt { kind: PromptKind::Toolchain, input: current };
+                // `rustup toolchain list` takes a moment, but nothing else is happening.
+                let installed = rust_ide::env::installed_toolchains();
+                self.open_toolchains(&installed);
             }
             Action::ShowEnv => {
                 let text = rust_ide::env::describe(Some(&self.project_dir()));
@@ -749,6 +754,46 @@ impl App {
                 }
             }
         }
+    }
+
+    // ----- Options > Rust toolchain -----
+
+    /// Opens the picker on the current choice.
+    pub fn open_toolchains(&mut self, installed: &[String]) {
+        let choices = rust_ide::env::toolchain_choices(installed, &self.project_dir());
+        let selected = choices.iter().position(|c| c.current).unwrap_or(0);
+        self.status = if installed.is_empty() { "rustup found no toolchains (is rustup installed?)".into() } else { String::new() };
+        self.mode = Mode::Toolchains { choices, selected };
+    }
+
+    fn toolchain_key(&mut self, key: KeyEvent) -> Effect {
+        let Mode::Toolchains { choices, selected } = &mut self.mode else { return Effect::None };
+        let rows = choices.len() + 1;
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Edit,
+            KeyCode::Up => *selected = (*selected + rows - 1) % rows,
+            KeyCode::Down | KeyCode::Tab => *selected = (*selected + 1) % rows,
+            KeyCode::Home => *selected = 0,
+            KeyCode::End => *selected = rows - 1,
+            KeyCode::Char('o' | 'O') => *selected = rows - 1,
+            KeyCode::Enter => {
+                let row = *selected;
+                match choices.get(row).cloned() {
+                    Some(choice) => {
+                        let name = (!choice.name.is_empty()).then_some(choice.name.as_str());
+                        self.status = match rust_ide::env::set_rust_toolchain(&self.project_dir(), name) {
+                            Ok(message) if choice.usable => message,
+                            Ok(message) => format!("{message} - warning: {}", choice.note),
+                            Err(e) => e,
+                        };
+                        self.mode = Mode::Edit;
+                    }
+                    None => self.mode = Mode::Prompt { kind: PromptKind::Toolchain, input: String::new() },
+                }
+            }
+            _ => {}
+        }
+        Effect::None
     }
 
     // ----- New file: choose a language -----
@@ -1530,17 +1575,44 @@ three");
         app.buffer_mut().path = Some(root.join("main.rs"));
         assert_eq!(app.toolchain_label(), "Rust default ");
 
-        app.act(Action::RustToolchain);
-        assert!(matches!(&app.mode, Mode::Prompt { kind: PromptKind::Toolchain, input } if input.is_empty()));
+        // The typed name (the "Other name..." row): checked, and bare channels get the GNU host on Windows.
         app.submit(PromptKind::Toolchain, "bad name!");
         assert!(app.status.contains("not a toolchain name"), "{}", app.status);
         app.submit(PromptKind::Toolchain, " nightly ");
-        assert_eq!(app.toolchain_label(), "Rust nightly ");
-        assert!(std::fs::read_to_string(root.join(".rust-ide").join("env")).unwrap().contains("RUSTUP_TOOLCHAIN=nightly"));
-        app.act(Action::RustToolchain);
-        assert!(matches!(&app.mode, Mode::Prompt { input, .. } if input == "nightly"), "starts from the current choice");
-        app.submit(PromptKind::Toolchain, "");
+        let nightly = rust_ide::env::qualify_toolchain("nightly", cfg!(windows));
+        assert_eq!(app.toolchain_label(), format!("Rust {nightly} "));
+        assert!(std::fs::read_to_string(root.join(".rust-ide").join("env")).unwrap().contains(&format!("RUSTUP_TOOLCHAIN={nightly}")));
+
+        // The picker: default, installed ones, then "Other name...".
+        let (gnu, msvc) = ("stable-x86_64-pc-windows-gnu".to_string(), "nightly-x86_64-pc-windows-msvc".to_string());
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.open_toolchains(&[gnu.clone(), msvc.clone()]);
+        assert!(matches!(&app.mode, Mode::Toolchains { choices, selected: 3 } if choices.len() == 4), "starts on the stored choice, which is not installed");
+        app.key(key(KeyCode::Home));
+        app.key(key(KeyCode::Down));
+        app.key(key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Edit));
+        assert_eq!(app.toolchain_label(), format!("Rust {gnu} "));
+        app.open_toolchains(&[gnu.clone(), msvc.clone()]);
+        assert!(matches!(&app.mode, Mode::Toolchains { selected: 1, .. }), "starts on the current choice");
+        app.key(key(KeyCode::Down));
+        app.key(key(KeyCode::Enter));
+        assert_eq!(app.toolchain_label(), format!("Rust {msvc} "));
+        if cfg!(windows) {
+            assert!(app.status.contains("warning"), "an MSVC toolchain without Visual Studio is flagged: {}", app.status);
+        }
+        app.open_toolchains(&[gnu.clone()]);
+        app.key(key(KeyCode::Char('o')));
+        app.key(key(KeyCode::Enter));
+        assert!(matches!(&app.mode, Mode::Prompt { kind: PromptKind::Toolchain, .. }), "Other name asks for a name");
+        app.mode = Mode::Edit;
+        app.open_toolchains(&[gnu.clone()]);
+        app.key(key(KeyCode::Home));
+        app.key(key(KeyCode::Enter));
         assert_eq!(app.toolchain_label(), "Rust default ");
+        app.open_toolchains(&[gnu]);
+        app.key(key(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Edit));
         app.buffer_mut().path = Some(root.join("a.py"));
         assert_eq!(app.toolchain_label(), "");
         let _ = std::fs::remove_dir_all(&root);

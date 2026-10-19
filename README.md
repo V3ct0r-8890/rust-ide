@@ -142,13 +142,31 @@ variables, in two groups kept apart. Both are plain text files with one `NAME=va
   installs `requirements.txt` (or the project itself with `pip install -e .` when it has a
   `pyproject.toml` / `setup.py`). F5 and the syntax check then use the `.venv` interpreter (the
   debugger and language server already did). The environment variables above apply to pip too.
-- **Options > Rust toolchain...** (Alt+O U): choose the Rust toolchain for the project (`stable`,
-  `nightly`, `1.85.0`, ...; empty goes back to the default). It is saved as `RUSTUP_TOOLCHAIN=` in
-  the project environment, so builds, runs, the debugger and rust-analyzer use it (restart the
-  language server by reopening the file after a change). A `rust-toolchain.toml` / `rust-toolchain`
-  file in the project is honoured too; the IDE's own choice wins. The status bar shows `Rust
-  <toolchain>` while a Rust file is open, and Show environment names the source. The toolchain must
-  already be installed (`rustup toolchain install nightly`).
+- **Options > Rust toolchain...** (Alt+O U): a list of the toolchains `rustup` has installed, with a
+  hint on each row; Up/Down and Enter pick one, **Default** goes back to rustup's default, and
+  **Other name...** (O) lets you type one. The choice is saved as `RUSTUP_TOOLCHAIN=` in the project
+  environment, so builds, runs, the debugger and rust-analyzer use it (reopen the file to restart
+  the language server). A `rust-toolchain.toml` / `rust-toolchain` file in the project is honoured
+  too; the IDE's own choice wins. The status bar shows `Rust <toolchain>` while a Rust file is
+  open, and Show environment names where the choice comes from.
+
+### Which Rust toolchain?
+
+| Name | Meaning |
+|---|---|
+| `stable` | The latest release. The normal choice. |
+| `beta` | The next release, for trying it early. |
+| `nightly` | Newest features, can break; some crates need it. `nightly-2025-01-01` pins a date. |
+| `1.85.0` | A pinned version, for a project that must build with exactly that compiler. |
+
+- **Windows:** every toolchain comes in two flavours. **`-x86_64-pc-windows-gnu`** links with
+  MinGW and is what this IDE is built and tested with. **`-x86_64-pc-windows-msvc`** needs Visual
+  Studio's `link.exe`; without it builds fail with "linker `link.exe` not found". The picker shows
+  such a toolchain in red, and a bare name typed under "Other name..." gets `-x86_64-pc-windows-gnu`
+  added. Linux and macOS have only one flavour per release.
+- **Install more** in a terminal (the IDE lists, it does not install):
+  `rustup toolchain install nightly-x86_64-pc-windows-gnu` (Windows) or
+  `rustup toolchain install nightly` (Linux). Remove with `rustup toolchain uninstall <name>`.
 
 ## Vim mode
 
