@@ -2120,8 +2120,33 @@ impl Ide {
 
         let launch = match Lang::from_path(Some(&path)) {
             Lang::CSharp => {
-                self.status = "Debugging C# is not supported yet - F5 runs the program".into();
-                return Task::none();
+                let Some(project) = runner::find_csproj(&path) else {
+                    self.status = "Debugging C# needs a project (.csproj); single files can only run (F5)".into();
+                    return Task::none();
+                };
+                let Some(debugger) = dap::find_netcoredbg(&root) else {
+                    self.status = "Debugging C# needs netcoredbg (see Options > Dependencies)".into();
+                    return Task::none();
+                };
+                let Some(dll) = dap::csharp_dll(&project) else {
+                    self.status = "No Debug build of the project found - build it first (F9)".into();
+                    return Task::none();
+                };
+                let dotnet = target.program.to_string_lossy().into_owned();
+                dap::Launch {
+                    adapter: dap::Adapter::NetCoreDbg,
+                    command: vec![debugger.to_string_lossy().into_owned(), "--interpreter=vscode".into()],
+                    arguments: serde_json::json!({
+                        "program": dotnet,
+                        "args": [dll],
+                        "cwd": target.cwd,
+                        "stopAtEntry": start == DebugStart::Entry,
+                        "justMyCode": true,
+                    }),
+                    entry_function: None,
+                    breakpoints,
+                    temporary,
+                }
             }
             Lang::Rust => {
                 let Some((gdb, _)) = dap::find_gdb() else {

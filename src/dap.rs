@@ -24,6 +24,8 @@ pub enum Adapter {
     Gdb,
     /// `python -m debugpy.adapter`.
     Debugpy,
+    /// `netcoredbg --interpreter=vscode` (Samsung, MIT), for C# on .NET.
+    NetCoreDbg,
 }
 
 /// Everything needed to start a debug session.
@@ -208,6 +210,7 @@ pub fn run(launch: Launch) -> impl Stream<Item = Event> {
         let adapter_id = match session.launch.adapter {
             Adapter::Gdb => "gdb",
             Adapter::Debugpy => "debugpy",
+            Adapter::NetCoreDbg => "coreclr",
         };
         session.request(
             "initialize",
@@ -504,6 +507,38 @@ pub fn debugpy_python(root: &std::path::Path) -> Option<PathBuf> {
     })
 }
 
+/// netcoredbg, the C# debugger: next to the project (`.dotnet-tools`), in
+/// the usual tool folders, or in a folder named by `NETCOREDBG`.
+pub fn find_netcoredbg(root: &std::path::Path) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::var_os("NETCOREDBG") {
+        dirs.push(PathBuf::from(dir));
+    }
+    for ancestor in root.ancestors() {
+        dirs.push(ancestor.join(".dotnet-tools"));
+        dirs.push(ancestor.join(".dotnet-tools").join("netcoredbg"));
+    }
+    dirs.extend(platform::search_dirs());
+    for dir in platform::search_dirs() {
+        dirs.push(dir.join("netcoredbg"));
+    }
+    platform::find_in(&dirs, "netcoredbg")
+}
+
+/// The built program of a C# project: `bin/<config>/<framework>/<name>.dll`,
+/// the newest one (Debug builds only; the debugger needs symbols).
+pub fn csharp_dll(project: &std::path::Path) -> Option<PathBuf> {
+    let dir = project.parent()?;
+    let name = project.file_stem()?.to_string_lossy().into_owned();
+    let debug = dir.join("bin").join("Debug");
+    std::fs::read_dir(debug)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path().join(format!("{name}.dll")))
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
 /// gdb with DAP support (14 or newer): the path and its version line.
 pub fn find_gdb() -> Option<(PathBuf, String)> {
     let mut dirs = platform::search_dirs();
@@ -667,6 +702,53 @@ mod tests {
             }),
             entry_function: None,
             breakpoints: BTreeMap::from([(script.clone(), vec![3])]),
+            temporary: None,
+        };
+        let (stops, output, exit) = drive(launch, 2);
+        assert_eq!(stops.iter().map(|s| s.0).collect::<Vec<_>>(), [3, 4], "{stops:?}");
+        assert!(stops[0].1.iter().any(|(n, v)| n == "y" && v == "42"), "{stops:?}");
+        assert!(output.contains("answer 42"), "{output:?}");
+        assert_eq!(exit, Some(0));
+    }
+
+    #[test]
+    #[ignore = "needs netcoredbg and the .NET SDK; run with --ignored"]
+    fn netcoredbg_stops_at_breakpoint() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let debugger = find_netcoredbg(root).expect("netcoredbg (see .dotnet-tools)");
+        let dir = probe_dir().join("csharp");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("demo.csproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n",
+        )
+        .unwrap();
+        let source = dir.join("Program.cs");
+        std::fs::write(
+            &source,
+            "var x = 41;\nvar y = x + 1;\nSystem.Console.WriteLine($\"answer {y}\");\nvar z = y * 2;\n",
+        )
+        .unwrap();
+        let build = platform::hidden_command(platform::find_program("dotnet").expect("dotnet"))
+            .args(["build", "--nologo"])
+            .arg(dir.join("demo.csproj"))
+            .output()
+            .unwrap();
+        assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stdout));
+        let dll = csharp_dll(&dir.join("demo.csproj")).expect("built dll");
+        let launch = Launch {
+            adapter: Adapter::NetCoreDbg,
+            command: vec![debugger.to_string_lossy().into_owned(), "--interpreter=vscode".into()],
+            arguments: json!({
+                "program": platform::find_program("dotnet").unwrap(),
+                "args": [dll],
+                "cwd": dir,
+                "stopAtEntry": false,
+                "justMyCode": true,
+            }),
+            entry_function: None,
+            breakpoints: BTreeMap::from([(source.clone(), vec![3])]),
             temporary: None,
         };
         let (stops, output, exit) = drive(launch, 2);

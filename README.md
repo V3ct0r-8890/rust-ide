@@ -21,7 +21,7 @@ Back-end engines (run invisibly by the IDE, never typed by the user):
 | Build / check | `cargo build --message-format=json` | `py_compile` / `ruff` | `dotnet build` (the project, or the single file) |
 | Run | `cargo run` | `python` / `pythonw` | `dotnet run` |
 | Code intelligence | `rust-analyzer` (LSP) | `pyright` / `ruff` (LSP) | `csharp-ls` (LSP) |
-| Debug | `codelldb` (DAP) | `debugpy` (DAP) | not yet |
+| Debug | `gdb` 14+ (DAP) | `debugpy` (DAP) | `netcoredbg` (DAP), window version, projects only |
 
 ## Keys
 

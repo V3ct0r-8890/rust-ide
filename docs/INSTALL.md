@@ -13,6 +13,7 @@ This page lists the same steps for each supported system.
 | rust-analyzer | live Rust errors and completion | recommended |
 | gdb 14 or newer | debugging Rust (F7/F8, breakpoints) | recommended |
 | debugpy | debugging Python | recommended |
+| netcoredbg | debugging C# (projects) | optional |
 | basedpyright (or pyright) | live Python errors and completion | recommended |
 | xdg-desktop-portal | Open / Save dialogs (Linux) | recommended on Linux |
 | a terminal emulator | *Run > Run in external terminal* (Linux) | optional |
@@ -53,6 +54,9 @@ python -m pip install --user basedpyright debugpy
 ```
 
 gdb comes with the MinGW-w64 (WinLibs) package above.
+
+netcoredbg (C# debugger, optional): download `netcoredbg-win64.zip` from
+https://github.com/Samsung/netcoredbg/releases, unzip it and put the folder on PATH.
 
 Open a new terminal afterwards so the updated `PATH` is picked up.
 

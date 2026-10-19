@@ -111,9 +111,12 @@ panel, F5 through `dotnet run`, and ".NET SDK 10" in Options > Dependencies. Bot
   Options > Dependencies) for live errors and completion; its root is the nearest `.sln` / `.csproj` folder,
   so loose single files get none. Live test: `dotnet tool install csharp-ls --tool-path .dotnet-tools` then
   `cargo test csharp_ls_live -- --ignored`.
-- **Debugger:** `netcoredbg` (Samsung, MIT), which speaks the Debug Adapter Protocol like gdb and
-  debugpy. Microsoft's own debugger (`vsdbg`) is not open source and is not used. Until then the IDE
-  says "Debugging C# is not supported yet".
+- **Debugger - done in 0.2.24:** `netcoredbg` (Samsung, MIT), which speaks the Debug Adapter Protocol like gdb and
+  debugpy (Microsoft's `vsdbg` is not open source and is not used). Window version: F7/F8, breakpoints,
+  locals, Go to cursor on a `.csproj` project's last Debug build (F9 first); it is found in `.dotnet-tools`
+  next to the project, on PATH, or via `NETCOREDBG`. Single files (file-based apps) cannot be debugged yet,
+  and the terminal version has no debugger at all. Live test: put netcoredbg in `.dotnet-tools/netcoredbg`
+  then `cargo test netcoredbg -- --ignored`. Not yet tried on Linux.
 - **Setup:** csharp-ls and netcoredbg in Options > Dependencies, the install scripts and docs/INSTALL.md;
   Ubuntu `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed) and Fedora/RHEL
   `sudo dnf install dotnet-sdk-10.0` are listed but not yet tried on those systems; netcoredbg from its
@@ -121,8 +124,7 @@ panel, F5 through `dotnet run`, and ".NET SDK 10" in Options > Dependencies. Bot
 - **Templates - done in 0.2.23:** C# in File > New project (both versions): Simple (console project), Low (a few classes),
   Medium (`.slnx` solution: library + console app + xunit tests), Complex (util / core / cli + tests +
   `Directory.Build.props` + CI workflow). Tested by `cargo test templates:: -- --ignored` (skipped without .NET 10).
-- Check before starting the debugger: whether netcoredbg covers breakpoints, stepping and locals on
-  Windows and Linux.
+
 ## Known limitations
 
 

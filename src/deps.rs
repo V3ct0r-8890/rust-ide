@@ -188,6 +188,15 @@ pub fn check(os: Os) -> Vec<Dep> {
         }),
     });
 
+    deps.push(Dep {
+        name: "netcoredbg",
+        purpose: "debugging C# (F7/F8, breakpoints)",
+        need: Need::Optional,
+        found: crate::dap::find_netcoredbg(&here).map(|p| p.display().to_string()),
+        install: "download netcoredbg from https://github.com/Samsung/netcoredbg/releases and put it on PATH".into(),
+        auto: None,
+    });
+
     let (install, auto) = match os {
         // pip --user is blocked for the system Python on Ubuntu (PEP 668).
         Os::Debian => ("sudo apt install python3-debugpy".to_string(), None),
