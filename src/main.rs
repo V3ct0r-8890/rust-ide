@@ -60,7 +60,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("File", "Alt+F N / A", "New window (asks for the language) / Save as (File menu)"),
     ("File", "Alt+F P", "New project: Rust or Python, size Simple/Low/Medium/Complex, a name and a folder"),
     ("File", "Tab / Up / Down", "In the New project dialog: next / previous field; Left/Right or letters change a choice; Enter creates"),
-    ("File", "R P T M or 1-4", "In the language list: Rust, Python, Text, Markdown (Up/Down, Enter, Esc work too)"),
+    ("File", "R P C T M or 1-5", "In the language list: Rust, Python, C#, Text, Markdown (Up/Down, Enter, Esc work too)"),
     ("File", "Alt+X", "Exit (press twice to discard changes)"),
     ("Window", "F6 / Shift+F6", "Next / previous window"),
     ("Window", "Alt+1 ... Alt+9", "Go to window 1-9"),
@@ -120,7 +120,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
 const USAGE: &str = "\
 Usage: rust-ide [OPTIONS] [FILE...]
 
-Turbo Pascal-style IDE for Rust and Python.
+Turbo Pascal-style IDE for Rust, Python and C#.
 
 Options:
   --software   use software rendering (for broken GPU drivers)
@@ -1196,7 +1196,7 @@ impl Ide {
                 Task::perform(
                     dialog
                         .set_title("Open")
-                        .add_filter("Source and text", &["rs", "py", "pyw", "txt", "md"])
+                        .add_filter("Source and text", &["rs", "py", "pyw", "cs", "txt", "md"])
                         .add_filter("All files", &["*"])
                         .pick_file(),
                     |file| Message::Opened(file.map(|f| f.path().to_path_buf())),
@@ -2119,6 +2119,10 @@ impl Ide {
         };
 
         let launch = match Lang::from_path(Some(&path)) {
+            Lang::CSharp => {
+                self.status = "Debugging C# is not supported yet - F5 runs the program".into();
+                return Task::none();
+            }
             Lang::Rust => {
                 let Some((gdb, _)) = dap::find_gdb() else {
                     self.status = "Debugging Rust needs gdb 14 or newer (see Options > Dependencies)".into();
@@ -5096,9 +5100,13 @@ mod language_tests {
         assert_eq!((ide.untitled_ext, ide.lang()), (Some("md"), Lang::Plain));
         assert_eq!(ide.title(window::Id::unique()), "NONAME.MD - Rust IDE");
 
-        send(&mut ide, [Message::New, Message::Nav(NavKey::Char('3'))]);
+        send(&mut ide, [Message::New, Message::Nav(NavKey::Char('4'))]);
         assert_eq!(ide.untitled_ext, Some("txt"));
         assert_eq!(ide.suggested_name(), "NONAME.TXT");
+
+        send(&mut ide, [Message::New, Message::Nav(NavKey::Char('c'))]);
+        assert_eq!((ide.untitled_ext, ide.lang()), (Some("cs"), Lang::CSharp));
+        assert_eq!(ide.suggested_name(), "NONAME.CS");
 
         send(&mut ide, [Message::New, Message::NewFileType(0)]);
         assert_eq!((ide.untitled_ext, ide.lang()), (Some("rs"), Lang::Rust));
@@ -5154,7 +5162,7 @@ mod language_tests {
         let _ = ide.ask_language(false);
         send(&mut ide, [Message::Nav(NavKey::Char('m'))]);
         let _ = ide.ask_language(false);
-        assert_eq!(ide.language.as_ref().map(|d| d.selected), Some(3), "Markdown, as chosen last time");
+        assert_eq!(ide.language.as_ref().map(|d| d.selected), Some(4), "Markdown, as chosen last time");
         send(&mut ide, [Message::Nav(NavKey::Enter)]);
         assert_eq!(ide.untitled_ext, Some("md"), "Enter alone repeats the last choice");
     }
@@ -5291,8 +5299,8 @@ mod language_tests {
     fn the_chooser_dialog_builds_and_is_in_the_help() {
         let _settings = isolate_settings();
         let _ = language_dialog(&LanguageDialog { selected: 1, startup: true });
-        let _ = language_dialog(&LanguageDialog { selected: 3, startup: false });
-        assert!(SHORTCUTS.iter().any(|(_, keys, _)| keys.contains("R P T M")), "listed in the F1 help");
+        let _ = language_dialog(&LanguageDialog { selected: 4, startup: false });
+        assert!(SHORTCUTS.iter().any(|(_, keys, _)| keys.contains("R P C T M")), "listed in the F1 help");
     }
 }
 

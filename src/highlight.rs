@@ -1,4 +1,4 @@
-//! Turbo Pascal–style syntax highlighting for Rust and Python, plus
+//! Turbo Pascal–style syntax highlighting for Rust, Python and C#, plus
 //! red/magenta marks for live LSP diagnostics.
 
 use std::ops::Range;
@@ -12,6 +12,7 @@ pub enum Lang {
     Plain,
     Rust,
     Python,
+    CSharp,
 }
 
 impl Lang {
@@ -23,6 +24,7 @@ impl Lang {
         match ext {
             Some("rs") => Lang::Rust,
             Some("py" | "pyw") => Lang::Python,
+            Some("cs") => Lang::CSharp,
             _ => Lang::Plain,
         }
     }
@@ -143,6 +145,7 @@ impl highlighter::Highlighter for Highlighter {
         let (tokens, next) = match self.settings.lang {
             Lang::Rust => lex_rust(line, state),
             Lang::Python => lex_python(line, state),
+            Lang::CSharp => lex_csharp(line, state),
             Lang::Plain => (Vec::new(), State::Normal),
         };
         self.states.truncate(self.current_line + 1);
@@ -176,6 +179,7 @@ impl LineHighlighter {
         let (tokens, next) = match self.lang {
             Lang::Rust => lex_rust(line, self.state),
             Lang::Python => lex_python(line, self.state),
+            Lang::CSharp => lex_csharp(line, self.state),
             Lang::Plain => (Vec::new(), State::Normal),
         };
         self.state = next;
@@ -243,6 +247,21 @@ const PYTHON_KEYWORDS: &[&str] = &[
 const PYTHON_TYPES: &[&str] = &[
     "int", "float", "str", "bool", "bytes", "list", "dict", "set", "tuple", "object", "complex",
     "frozenset", "bytearray", "type",
+];
+
+const CSHARP_KEYWORDS: &[&str] = &[
+    "abstract", "as", "base", "break", "case", "catch", "checked", "class", "const", "continue",
+    "default", "delegate", "do", "else", "enum", "event", "explicit", "extern", "false", "finally",
+    "fixed", "for", "foreach", "goto", "if", "implicit", "in", "interface", "internal", "is",
+    "lock", "namespace", "new", "null", "operator", "out", "override", "params", "private",
+    "protected", "public", "readonly", "ref", "return", "sealed", "sizeof", "stackalloc", "static",
+    "struct", "switch", "this", "throw", "true", "try", "typeof", "unchecked", "unsafe", "using",
+    "virtual", "volatile", "while", "var", "async", "await", "record", "init", "required", "yield",
+    "get", "set", "when", "where", "with", "global", "partial", "nameof", "and", "or", "not",
+];
+const CSHARP_TYPES: &[&str] = &[
+    "bool", "byte", "sbyte", "char", "decimal", "double", "float", "int", "uint", "long", "ulong",
+    "short", "ushort", "object", "string", "void", "nint", "nuint", "dynamic",
 ];
 
 struct Lexer<'a> {
@@ -509,10 +528,158 @@ fn lex_python(line: &str, mut state: State) -> (Vec<(Range<usize>, Highlight)>, 
     (lx.tokens, state)
 }
 
+fn lex_csharp(line: &str, mut state: State) -> (Vec<(Range<usize>, Highlight)>, State) {
+    let mut lx = Lexer::new(line);
+
+    loop {
+        let start = lx.pos;
+        match state {
+            State::BlockComment(_) => {
+                match lx.rest().find("*/") {
+                    Some(i) => {
+                        lx.pos += i + 2;
+                        state = State::Normal;
+                    }
+                    None => lx.pos = line.len(),
+                }
+                lx.emit(start, Highlight::Comment);
+                if state != State::Normal {
+                    break;
+                }
+            }
+            // A verbatim string: ends at a quote that is not doubled.
+            State::Triple('@') => {
+                let mut closed = false;
+                while let Some(c) = lx.bump() {
+                    if c == '"' {
+                        if lx.peek() == Some('"') {
+                            lx.bump();
+                        } else {
+                            closed = true;
+                            break;
+                        }
+                    }
+                }
+                lx.emit(start, Highlight::Str);
+                if !closed {
+                    break;
+                }
+                state = State::Normal;
+            }
+            // A raw string literal: ends at three quotes.
+            State::Triple(_) => {
+                match lx.rest().find("\"\"\"") {
+                    Some(i) => {
+                        lx.pos += i + 3;
+                        state = State::Normal;
+                    }
+                    None => lx.pos = line.len(),
+                }
+                lx.emit(start, Highlight::Str);
+                if state != State::Normal {
+                    break;
+                }
+            }
+            State::Normal | State::Str | State::RawStr(_) => {
+                let Some(c) = lx.peek() else { break };
+                let rest = lx.rest();
+                let prefixed = rest.starts_with("@\"") || rest.starts_with("$@\"") || rest.starts_with("@$\"");
+                if rest.starts_with("//") {
+                    lx.to_end(Highlight::Comment);
+                } else if rest.starts_with("/*") {
+                    lx.pos += 2;
+                    lx.emit(start, Highlight::Comment);
+                    state = State::BlockComment(1);
+                } else if prefixed {
+                    lx.pos += rest.find('"').unwrap_or(0) + 1;
+                    lx.emit(start, Highlight::Str);
+                    state = State::Triple('@');
+                } else if c == '"' || rest.starts_with("$\"") || rest.starts_with("$$\"") || rest.starts_with("$\"\"\"") {
+                    let quotes_at = rest.find('"').unwrap_or(0);
+                    lx.pos += quotes_at;
+                    if lx.rest().starts_with("\"\"\"") {
+                        lx.pos += 3;
+                        match lx.rest().find("\"\"\"") {
+                            Some(i) => lx.pos += i + 3,
+                            None => {
+                                lx.pos = line.len();
+                                state = State::Triple('"');
+                            }
+                        }
+                    } else {
+                        lx.bump();
+                        if !lx.quoted('"') {
+                            lx.emit(start, Highlight::Str);
+                            continue; // an unclosed string stops at the end of the line
+                        }
+                    }
+                    lx.emit(start, Highlight::Str);
+                } else if c == '\'' {
+                    lx.bump();
+                    lx.quoted('\'');
+                    lx.emit(start, Highlight::Str);
+                } else if c == '#' && line[..start].trim().is_empty() {
+                    lx.to_end(Highlight::Attribute); // #region, #if, #nullable ...
+                } else if c.is_ascii_digit() {
+                    lx.number();
+                } else if c.is_alphabetic() || c == '_' || c == '@' {
+                    if c == '@' {
+                        lx.bump(); // @name: an identifier that may be a keyword
+                        lx.ident();
+                    } else {
+                        let word = lx.ident();
+                        if CSHARP_KEYWORDS.contains(&word) {
+                            lx.emit(start, Highlight::Keyword);
+                        } else if CSHARP_TYPES.contains(&word) || word.starts_with(char::is_uppercase) {
+                            lx.emit(start, Highlight::Type);
+                        }
+                    }
+                } else {
+                    lx.bump();
+                }
+            }
+        }
+    }
+
+    (lx.tokens, state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn csharp_tokens_and_multi_line_strings() {
+        let line = r#"public static void Main() { var s = $"hi {1}"; // done"#;
+        let (tokens, state) = lex_csharp(line, State::Normal);
+        assert_eq!(state, State::Normal);
+        let k = kinds(&tokens, line);
+        assert!(k.contains(&("public".into(), Highlight::Keyword)));
+        assert!(k.contains(&("void".into(), Highlight::Type)));
+        assert!(k.contains(&("Main".into(), Highlight::Type)));
+        assert!(k.contains(&("var".into(), Highlight::Keyword)));
+        assert!(k.contains(&("$\"hi {1}\"".into(), Highlight::Str)));
+        assert!(k.contains(&("// done".into(), Highlight::Comment)));
+
+        let (_, state) = lex_csharp("var a = @\"one", State::Normal);
+        assert_eq!(state, State::Triple('@'));
+        let (tokens, state) = lex_csharp("two \"\"quoted\"\" end\"; int", state);
+        assert_eq!(state, State::Normal);
+        assert_eq!(tokens[0].1, Highlight::Str);
+        assert!(tokens.iter().any(|(_, h)| *h == Highlight::Type), "int after the string");
+
+        let (_, state) = lex_csharp("var j = \"\"\"{ \"a\": 1,", State::Normal);
+        assert_eq!(state, State::Triple('"'));
+        let (_, state) = lex_csharp("\"b\": 2 }\"\"\";", state);
+        assert_eq!(state, State::Normal);
+
+        let (_, state) = lex_csharp("int x; /* start", State::Normal);
+        assert_eq!(state, State::BlockComment(1));
+        let (tokens, state) = lex_csharp("end */ return;", state);
+        assert_eq!((state, tokens[0].0.clone()), (State::Normal, 0..6));
+        let (tokens, _) = lex_csharp("#region Helpers", State::Normal);
+        assert_eq!(tokens[0].1, Highlight::Attribute);
+    }
     fn kinds(tokens: &[(Range<usize>, Highlight)], line: &str) -> Vec<(String, Highlight)> {
         tokens.iter().map(|(r, h)| (line[r.clone()].to_string(), *h)).collect()
     }

@@ -193,8 +193,8 @@ impl Client {
 
     fn open(&mut self, path: PathBuf, text: String) -> Vec<Event> {
         let lang = Lang::from_path(Some(&path));
-        if lang == Lang::Plain {
-            return Vec::new();
+        if matches!(lang, Lang::Plain | Lang::CSharp) {
+            return Vec::new(); // no language server for these (yet)
         }
         let key = (lang, project_root(lang, &path));
         let mut events = Vec::new();

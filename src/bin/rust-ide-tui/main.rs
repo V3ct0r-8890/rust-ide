@@ -23,7 +23,7 @@ use app::{App, Effect};
 const USAGE: &str = "\
 Usage: rust-ide-tui [FILE...]
 
-Turbo Pascal-style IDE for Rust and Python, in the terminal.
+Turbo Pascal-style IDE for Rust, Python and C#, in the terminal.
 Press F1 inside for the keyboard shortcuts.";
 
 fn main() -> io::Result<()> {

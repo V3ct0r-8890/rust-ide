@@ -1345,7 +1345,7 @@ pub(crate) mod tests {
         app.handle(key(KeyCode::Char('m')));
         assert_eq!((app.buffer().ext, app.buffer().lang()), (Some("md"), rust_ide::highlight::Lang::Plain));
         app.ask_language(false);
-        app.handle(key(KeyCode::Char('3')));
+        app.handle(key(KeyCode::Char('4')));
         assert_eq!(app.buffer().name(), "NONAME.TXT");
         app.ask_language(false);
         app.handle(key(KeyCode::Char('z')));
@@ -1384,7 +1384,7 @@ pub(crate) mod tests {
         app.ask_language(false);
         app.handle(key(KeyCode::Char('m')));
         app.ask_language(false);
-        assert!(matches!(app.mode, Mode::Language { selected: 3, .. }));
+        assert!(matches!(app.mode, Mode::Language { selected: 4, .. }));
         app.handle(key(KeyCode::Enter));
         assert_eq!(app.buffer().ext, Some("md"));
     }

@@ -1,6 +1,6 @@
 # rust-ide
 
-A Turbo Pascal–style IDE for **Rust** and **Python**, with a GUI (iced) and, later, a TUI front end.
+A Turbo Pascal–style IDE for **Rust**, **Python** and **C#**, with a GUI (iced) and, later, a TUI front end.
 
 The goal: open a file, press **F5**, and the IDE silently builds/checks it in the background,
 jumps to the first error if it fails, or runs the program (console output panel or its own GUI window) if it succeeds.
@@ -16,12 +16,12 @@ frontends gui (iced), tui (ratatui) later
 
 Back-end engines (run invisibly by the IDE, never typed by the user):
 
-| Job | Rust | Python |
-|---|---|---|
-| Build / check | `cargo build --message-format=json` | `py_compile` / `ruff` |
-| Run | `cargo run` | `python` / `pythonw` |
-| Code intelligence | `rust-analyzer` (LSP) | `pyright` / `ruff` (LSP) |
-| Debug | `codelldb` (DAP) | `debugpy` (DAP) |
+| Job | Rust | Python | C# |
+|---|---|---|---|
+| Build / check | `cargo build --message-format=json` | `py_compile` / `ruff` | `dotnet build` (the project, or the single file) |
+| Run | `cargo run` | `python` / `pythonw` | `dotnet run` |
+| Code intelligence | `rust-analyzer` (LSP) | `pyright` / `ruff` (LSP) | highlighting only for now |
+| Debug | `codelldb` (DAP) | `debugpy` (DAP) | not yet |
 
 ## Keys
 
@@ -69,6 +69,8 @@ rendered document next to the editor: headings, bold and italic, lists, quotes, 
 what you type and scrolls with the cursor; clicking a link opens web addresses in the browser and other `.md` / text files
 in a window. Images show only their description for now.
 
+**C#** (0.2.21): `.cs` files are highlighted; F9 / Alt+F9 run `dotnet build` on the file's project (the nearest folder above it with a `.csproj`), or on the single file when there is no project (a file-based app, needs the .NET SDK 10 or newer); errors and warnings go to the Messages panel with their `CS` codes, and F5 runs the program in the Output window. Install the SDK with Options > Dependencies (`winget install Microsoft.DotNet.SDK.10` on Windows). The language server, the debugger and C# project templates are still to come.
+
 **Settings dialog** (window version): **Options > Settings...** (Alt+O E) has the main options in one place: where the Markdown preview opens, window style, Vim mode, check before run, font size and the dependencies check. Up/Down choose a row, Left/Right or Enter change it, a letter (P W V C F D) uses that row, Esc closes; each change is applied and remembered at once. The menu items and keys below still work.
 
 **Where the preview opens** is chosen in **Options > Preview in** (Alt+O P cycles it; remembered):
@@ -77,7 +79,7 @@ in a window. Images show only their description for now.
 - *a new window*: Alt+F6 opens a separate OS window (move it to a second screen); it follows what you type in the active `.md` file. Alt+F6 or the window's close button closes it.
 
 **Starting without a file** (no file name on the command line): the IDE asks which language to use: Rust (.rs),
-Python (.py), or, for any other language, Text (.txt) or Markdown (.md). Press R / P / T / M or 1-4 (or click), Enter takes
+Python (.py), C# (.cs), or, for any other language, Text (.txt) or Markdown (.md). Press R / P / C / T / M or 1-5 (or click), Enter takes
 the highlighted one (the one you chose last time), Esc gives a plain Rust window. **File > New** asks the same question.
 
 **File > New project...** (Alt+F P; both versions) creates a ready-made project: pick Rust or Python, a size, a project name and a folder (Tab / Up / Down move between the fields, Left/Right or the letters change a choice, Enter creates, Esc cancels). The new project folder is `folder/name`, and its main file opens, ready for F5. Sizes:

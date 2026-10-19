@@ -364,7 +364,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("F1", "This help (Up/Down/PgUp/PgDn scroll, Esc closes)"),
     ("F2 / Ctrl+S", "Save (asks for a name the first time)"),
     ("F3 / Ctrl+O", "Open a file (each in its own window)"),
-    ("File > New", "Asks for the language: R Rust, P Python, T Text, M Markdown (or 1-4)"),
+    ("File > New", "Asks for the language: R Rust, P Python, C C#, T Text, M Markdown (or 1-5)"),
     ("File > New project", "Rust or Python, size Simple/Low/Medium/Complex, a name and a folder (Tab moves, Enter creates)"),
     ("Alt+X / Ctrl+Q", "Exit (press twice to discard changes)"),
     ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
@@ -476,7 +476,7 @@ fn draw_language(frame: &mut Frame, selected: usize, startup: bool) {
     frame.render_widget(Paragraph::new(lines).style(BAR), list);
     frame.render_widget(Paragraph::new(format!(" {}", filetype::NOTE)).style(BAR.fg(Color::Rgb(60, 60, 60))).wrap(ratatui::widgets::Wrap { trim: true }), note);
     let escape = if startup { "Esc: plain Rust window" } else { "Esc: cancel" };
-    frame.render_widget(Paragraph::new(format!(" Up/Down  Enter OK  R P T M / 1-4  {escape}")).style(BAR), hint);
+    frame.render_widget(Paragraph::new(format!(" Up/Down  Enter OK  R P C T M / 1-5  {escape}")).style(BAR), hint);
 }
 
 fn draw_toolchains(frame: &mut Frame, choices: &[rust_ide::env::ToolchainChoice], selected: usize) {
@@ -558,7 +558,7 @@ mod tests {
         let mut app = App::new(&[]);
         app.ask_language(true);
         let text = screen(&app, 80, 20);
-        for expected in ["Choose a language", "Rust", "Python", "Text file", "Markdown", ".rs", ".md", "Rust and Python are supported"] {
+        for expected in ["Choose a language", "Rust", "Python", "C#", "Text file", "Markdown", ".rs", ".cs", ".md", "Rust, Python and C# are supported"] {
             assert!(text.contains(expected), "missing {expected:?} in\n{text}");
         }
         assert!(text.contains("Esc: plain Rust window"));

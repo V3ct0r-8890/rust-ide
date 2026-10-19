@@ -1,5 +1,5 @@
 //! The kinds of new file the IDE offers when it starts without a file (and
-//! for File > New): the two supported programming languages, and plain text
+//! for File > New): the supported programming languages, and plain text
 //! and Markdown as the alternatives for everything else.
 
 use std::path::Path;
@@ -14,9 +14,10 @@ pub struct FileType {
     pub hotkey: char,
 }
 
-pub const FILE_TYPES: [FileType; 4] = [
+pub const FILE_TYPES: [FileType; 5] = [
     FileType { label: "Rust", ext: "rs", hotkey: 'r' },
     FileType { label: "Python", ext: "py", hotkey: 'p' },
+    FileType { label: "C#", ext: "cs", hotkey: 'c' },
     FileType { label: "Text file", ext: "txt", hotkey: 't' },
     FileType { label: "Markdown", ext: "md", hotkey: 'm' },
 ];
@@ -25,7 +26,7 @@ pub const FILE_TYPES: [FileType; 4] = [
 pub const DEFAULT_EXT: &str = "rs";
 
 /// Shown in the chooser.
-pub const NOTE: &str = "Rust and Python are supported. For any other language use Text or Markdown.";
+pub const NOTE: &str = "Rust, Python and C# are supported. For any other language use Text or Markdown.";
 
 /// Position of an extension in [`FILE_TYPES`].
 pub fn index_of(ext: &str) -> Option<usize> {
@@ -72,9 +73,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_list_has_two_languages_and_two_text_formats() {
+    fn the_list_has_three_languages_and_two_text_formats() {
         let exts: Vec<_> = FILE_TYPES.iter().map(|t| t.ext).collect();
-        assert_eq!(exts, ["rs", "py", "txt", "md"]);
+        assert_eq!(exts, ["rs", "py", "cs", "txt", "md"]);
         assert_eq!(FILE_TYPES[0].ext, DEFAULT_EXT);
         let hotkeys: std::collections::HashSet<_> = FILE_TYPES.iter().map(|t| t.hotkey).collect();
         assert_eq!(hotkeys.len(), FILE_TYPES.len(), "hotkeys are unique");
@@ -87,11 +88,12 @@ mod tests {
     fn letters_and_digits_pick_a_type() {
         assert_eq!(by_key('r'), Some(0));
         assert_eq!(by_key('P'), Some(1));
-        assert_eq!(by_key('t'), Some(2));
-        assert_eq!(by_key('m'), Some(3));
+        assert_eq!(by_key('c'), Some(2));
+        assert_eq!(by_key('t'), Some(3));
+        assert_eq!(by_key('m'), Some(4));
         assert_eq!(by_key('1'), Some(0));
-        assert_eq!(by_key('4'), Some(3));
-        assert_eq!(by_key('5'), None);
+        assert_eq!(by_key('5'), Some(4));
+        assert_eq!(by_key('6'), None);
         assert_eq!(by_key('0'), None);
         assert_eq!(by_key('x'), None);
     }
@@ -104,7 +106,7 @@ mod tests {
         assert_eq!(with_default_extension("notes", "txt"), "notes.txt");
         assert_eq!(with_default_extension("  main.rs ", "py"), "main.rs", "a typed extension is kept");
         assert_eq!(with_default_extension("dir\\prog", "py"), "dir\\prog.py");
-        assert_eq!(ext_of(2), "txt");
+        assert_eq!(ext_of(3), "txt");
         assert_eq!(ext_of(99), "rs");
     }
 
@@ -116,7 +118,7 @@ mod tests {
         unsafe { std::env::set_var("RUST_IDE_CONFIG_FILE", &file) };
         assert_eq!(last_choice(), 0, "Rust the first time");
         remember("md");
-        assert_eq!(last_choice(), 3);
+        assert_eq!(last_choice(), 4);
         remember("py");
         assert_eq!(last_choice(), 1);
         assert!(std::fs::read_to_string(&file).unwrap().contains("new_file_type=py"));

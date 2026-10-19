@@ -112,6 +112,21 @@ pub fn check(os: Os) -> Vec<Dep> {
         }),
     });
 
+    deps.push(Dep {
+        name: ".NET SDK 10",
+        purpose: "build and run C# (dotnet; version 10 or newer also runs single .cs files)",
+        need: Need::Optional,
+        found: program_version("dotnet"),
+        install: match os {
+            Os::Windows => "winget install Microsoft.DotNet.SDK.10".into(),
+            Os::Debian => "sudo apt install dotnet-sdk-10.0   (or add Microsoft's package feed first)".into(),
+            Os::RedHat => "sudo dnf install dotnet-sdk-10.0".into(),
+            _ => "install the .NET SDK with your package manager".into(),
+        },
+        auto: (os == Os::Windows)
+            .then(|| words("winget install --id Microsoft.DotNet.SDK.10 -e --accept-source-agreements --accept-package-agreements")),
+    });
+
     let has_rustup = platform::find_program("rustup").is_some();
     deps.push(Dep {
         name: "rust-analyzer",

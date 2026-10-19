@@ -40,7 +40,7 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 |---|---|---|
 | 1 | Development environments for project sessions: variables (0.2.14), Python .venv (0.2.15) and Rust toolchain (0.2.16, picker 0.2.17) and sessions (0.2.18) are done, the rest is **next** | L |
 | 2 | Terminal version: the rest | L |
-| 3 | C# support | L |
+| 3 | C# support: language server, debugger, templates (build / run / highlighting done in 0.2.21) | L |
 
 ### 1. Development environments for project sessions - L (variables, Python .venv and Rust toolchain done, the rest is next)
 **Phase 1 is done in 0.2.14:** both groups of variables as plain `NAME=value` files
@@ -103,26 +103,23 @@ Suggested sub-steps, easiest first:
 5. Markdown preview: a small renderer built on the `pulldown-cmark` parser (headings, bold, lists, code blocks as styled text).
 
 ### 3. C# support (open-source tools only) - L
-- **Compiler:** the open-source .NET SDK command line (MIT licensed, Roslyn compiler), current
-  LTS release. F9 runs `dotnet build`, F5 runs `dotnet run`; errors come from the build output
-  (`file(line,col): error CS0103: ...`) into the Messages panel. A single `.cs` file without a
-  project runs with `dotnet run file.cs` (file-based apps, .NET 10+).
-- **Live errors and completion:** an open-source C# language server, `csharp-ls` (MIT, installed
-  with `dotnet tool install -g csharp-ls`).
+**Phase 1 is done in 0.2.21:** C# in the language list (`.cs`), a C# lexer (keywords, `$"..."`, `@"..."`,
+raw `"""` strings, `#region`), F9 / Alt+F9 through `dotnet build` (the nearest `.csproj`, else the single
+file as a file-based app on .NET 10+), MSBuild messages (`file(line,col): error CS...`) in the Messages
+panel, F5 through `dotnet run`, and ".NET SDK 10" in Options > Dependencies. Both versions.
+- **Language server (next):** `csharp-ls` (MIT, `dotnet tool install -g csharp-ls`) for live errors and
+  completion; its project root is the nearest `.sln` / `.csproj`. Until then C# files get no LSP.
 - **Debugger:** `netcoredbg` (Samsung, MIT), which speaks the Debug Adapter Protocol like gdb and
-  debugpy. Microsoft's own debugger (`vsdbg`) is not open source and is not used.
-- **Highlighting:** a C# lexer (keywords, strings including `@"..."` and `$"..."`, comments,
-  attributes).
-- **Setup:** add the .NET SDK, csharp-ls and netcoredbg to Options > Dependencies, the install
-  scripts and docs/INSTALL.md: Windows `winget install Microsoft.DotNet.SDK.10`, Ubuntu
-  `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed), Fedora/RHEL
-  `sudo dnf install dotnet-sdk-10.0`; netcoredbg from its GitHub releases.
+  debugpy. Microsoft's own debugger (`vsdbg`) is not open source and is not used. Until then the IDE
+  says "Debugging C# is not supported yet".
+- **Setup:** csharp-ls and netcoredbg in Options > Dependencies, the install scripts and docs/INSTALL.md;
+  Ubuntu `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed) and Fedora/RHEL
+  `sudo dnf install dotnet-sdk-10.0` are listed but not yet tried on those systems; netcoredbg from its
+  GitHub releases.
 - **Templates:** add C# to File > New project (`dotnet new console`, class library + tests,
-  solution with several projects), once the managed tools of item 1 exist.
-- Why last: it adds a whole new toolchain on three systems, and netcoredbg is unproven here.
-  Check before starting: the exact SDK and package names for each system, and whether
-  netcoredbg covers the needed features (breakpoints, stepping, locals) on Windows and Linux.
-
+  solution with several projects).
+- Check before starting the debugger: whether netcoredbg covers breakpoints, stepping and locals on
+  Windows and Linux.
 ## Known limitations
 
 
