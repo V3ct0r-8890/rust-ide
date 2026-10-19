@@ -6004,6 +6004,32 @@ mod project_dialog_tests {
     }
 
     #[test]
+    fn a_csharp_project_is_created_and_its_program_opens_highlighted() {
+        let _settings = isolate_settings();
+        let parent = scratch("create-cs");
+        let mut ide = Ide::default(); // does not save settings, so the other tests' starting choices stay put
+        send(&mut ide, [Message::OpenProject]);
+        keys(&mut ide, [NavKey::Char('c')]);
+        assert_eq!(ide.project.as_ref().unwrap().lang, Lang::CSharp);
+        send(
+            &mut ide,
+            [
+                Message::ProjectFolder(parent.to_string_lossy().into_owned()),
+                Message::ProjectName("cs-tool".into()),
+                Message::ProjectAct(PROJECT_SIZE, 1),
+                Message::ProjectAct(PROJECT_SIZE, 1),
+                Message::ProjectCreate,
+            ],
+        );
+        let main = parent.join("cs-tool").join("src").join("cs-tool").join("Program.cs");
+        assert!(main.is_file(), "the Medium layout");
+        assert_eq!(ide.path.as_deref(), Some(main.as_path()));
+        assert_eq!(ide.lang(), highlight::Lang::CSharp);
+        assert!(ide.content.text().contains("cs_tool.Core"), "the namespace uses underscores");
+        assert!(parent.join("cs-tool").join("cs-tool.slnx").is_file());
+    }
+
+    #[test]
     fn create_makes_the_project_and_opens_its_main_file() {
         let _settings = isolate_settings();
         let parent = scratch("create");

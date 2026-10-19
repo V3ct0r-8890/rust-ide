@@ -13,4 +13,5 @@ pub mod runner;
 pub mod search;
 pub mod session;
 pub mod templates;
+mod templates_csharp;
 pub mod vim;

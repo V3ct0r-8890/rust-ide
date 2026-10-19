@@ -69,7 +69,7 @@ rendered document next to the editor: headings, bold and italic, lists, quotes, 
 what you type and scrolls with the cursor; clicking a link opens web addresses in the browser and other `.md` / text files
 in a window. Images show only their description for now.
 
-**C#** (0.2.21): `.cs` files are highlighted; F9 / Alt+F9 run `dotnet build` on the file's project (the nearest folder above it with a `.csproj`), or on the single file when there is no project (a file-based app, needs the .NET SDK 10 or newer); errors and warnings go to the Messages panel with their `CS` codes, and F5 runs the program in the Output window. Install the SDK with Options > Dependencies (`winget install Microsoft.DotNet.SDK.10` on Windows). Live errors and completion (window version) come from `csharp-ls` (Options > Dependencies installs it with `dotnet tool install -g csharp-ls`) for files inside a `.csproj` / `.sln` folder; a loose single `.cs` file gets highlighting and F9 but no live errors. The debugger and C# project templates are still to come.
+**C#** (0.2.21): `.cs` files are highlighted; F9 / Alt+F9 run `dotnet build` on the file's project (the nearest folder above it with a `.csproj`), or on the single file when there is no project (a file-based app, needs the .NET SDK 10 or newer); errors and warnings go to the Messages panel with their `CS` codes, and F5 runs the program in the Output window. Install the SDK with Options > Dependencies (`winget install Microsoft.DotNet.SDK.10` on Windows). Live errors and completion (window version) come from `csharp-ls` (Options > Dependencies installs it with `dotnet tool install -g csharp-ls`) for files inside a `.csproj` / `.sln` folder; a loose single `.cs` file gets highlighting and F9 but no live errors. The debugger is still to come.
 
 **Settings dialog** (window version): **Options > Settings...** (Alt+O E) has the main options in one place: where the Markdown preview opens, window style, Vim mode, check before run, font size and the dependencies check. Up/Down choose a row, Left/Right or Enter change it, a letter (P W V C F D) uses that row, Esc closes; each change is applied and remembered at once. The menu items and keys below still work.
 
@@ -82,16 +82,16 @@ in a window. Images show only their description for now.
 Python (.py), C# (.cs), or, for any other language, Text (.txt) or Markdown (.md). Press R / P / C / T / M or 1-5 (or click), Enter takes
 the highlighted one (the one you chose last time), Esc gives a plain Rust window. **File > New** asks the same question.
 
-**File > New project...** (Alt+F P; both versions) creates a ready-made project: pick Rust or Python, a size, a project name and a folder (Tab / Up / Down move between the fields, Left/Right or the letters change a choice, Enter creates, Esc cancels). The new project folder is `folder/name`, and its main file opens, ready for F5. Sizes:
+**File > New project...** (Alt+F P; both versions) creates a ready-made project: pick Rust, Python or C#, a size, a project name and a folder (Tab / Up / Down move between the fields, Left/Right or the letters change a choice, Enter creates, Esc cancels). The new project folder is `folder/name`, and its main file opens, ready for F5. Sizes:
 
-| Size | Rust | Python |
-|---|---|---|
-| Simple | Cargo project, one `main.rs` | one `main.py` |
-| Low | binary crate in modules (`greeting`, `stats`) with unit tests | package with `__main__.py` and modules, pytest tests |
-| Medium | library + binary, error type, `config.txt`, integration tests, README | `pyproject.toml`, `src/` layout, `config.toml`, pytest, ruff settings, README |
-| Complex | Cargo workspace (util, core, cli), tests, a benchmark, CI workflow | `src/` package with argparse CLI, config, logging, tests, CI workflow |
+| Size | Rust | Python | C# |
+|---|---|---|---|
+| Simple | Cargo project, one `main.rs` | one `main.py` | console project, one `Program.cs` |
+| Low | binary crate in modules (`greeting`, `stats`) with unit tests | package with `__main__.py` and modules, pytest tests | console project in a few classes (`Greeting`, `Stats`) |
+| Medium | library + binary, error type, `config.txt`, integration tests, README | `pyproject.toml`, `src/` layout, `config.toml`, pytest, ruff settings, README | solution: library + console app, `config.txt`, xunit tests, README |
+| Complex | Cargo workspace (util, core, cli), tests, a benchmark, CI workflow | `src/` package with argparse CLI, config, logging, tests, CI workflow | solution: util, core and cli projects, `Directory.Build.props`, xunit tests, CI workflow |
 
-Rust projects need only Cargo; the Python ones need `pytest` for their tests (`pip install pytest`; Medium and Complex list it in `pyproject.toml`).
+Rust projects need only Cargo; the C# ones need the .NET SDK 10 (xunit packages download on the first test run); the Python ones need `pytest` for their tests (`pip install pytest`; Medium and Complex list it in `pyproject.toml`).
 The choice decides the highlighting, the `NONAME` file name and what Save As offers. `.txt` and `.md` files open like
 any other file, without highlighting.
 

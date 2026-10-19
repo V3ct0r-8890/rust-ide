@@ -1,4 +1,4 @@
-//! New project templates (File > New project): a Rust or Python project of one
+//! New project templates (File > New project): a Rust, Python or C# project of one
 //! of four sizes, written to disk with a name chosen by the user.
 //!
 //! Everything here is plain text generation, so both front ends share it and
@@ -7,10 +7,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::templates_csharp::{CS_COMPLEX, CS_LOW, CS_MEDIUM, CS_SIMPLE};
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
     Rust,
     Python,
+    CSharp,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -21,7 +24,7 @@ pub enum Size {
     Complex,
 }
 
-pub const LANGS: [Lang; 2] = [Lang::Rust, Lang::Python];
+pub const LANGS: [Lang; 3] = [Lang::Rust, Lang::Python, Lang::CSharp];
 pub const SIZES: [Size; 4] = [Size::Simple, Size::Low, Size::Medium, Size::Complex];
 
 impl Lang {
@@ -29,6 +32,7 @@ impl Lang {
         match self {
             Lang::Rust => "Rust",
             Lang::Python => "Python",
+            Lang::CSharp => "C#",
         }
     }
 
@@ -37,6 +41,7 @@ impl Lang {
         match self {
             Lang::Rust => "rust",
             Lang::Python => "python",
+            Lang::CSharp => "csharp",
         }
     }
 
@@ -79,6 +84,10 @@ impl Size {
             (Lang::Python, Size::Low) => "Package with __main__.py and modules, pytest tests",
             (Lang::Python, Size::Medium) => "pyproject.toml, src/ layout, pytest, ruff settings, README",
             (Lang::Python, Size::Complex) => "src/ package with CLI, config, logging, tests, CI workflow",
+            (Lang::CSharp, Size::Simple) => "Console project, one Program.cs (hello world)",
+            (Lang::CSharp, Size::Low) => "Console project in a few classes (Greeting, Stats)",
+            (Lang::CSharp, Size::Medium) => "Solution: library + console app, config file, xunit tests, README",
+            (Lang::CSharp, Size::Complex) => "Solution: util, core and cli projects, xunit tests, CI workflow",
         }
     }
 }
@@ -157,6 +166,10 @@ pub fn generate(lang: Lang, size: Size, name: &str) -> Project {
         (Lang::Python, Size::Low) => ("@IDENT@/__main__.py", PY_LOW.to_vec()),
         (Lang::Python, Size::Medium) => ("src/@IDENT@/__main__.py", PY_MEDIUM.to_vec()),
         (Lang::Python, Size::Complex) => ("src/@IDENT@/__main__.py", PY_COMPLEX.to_vec()),
+        (Lang::CSharp, Size::Simple) => ("Program.cs", CS_SIMPLE.to_vec()),
+        (Lang::CSharp, Size::Low) => ("Program.cs", CS_LOW.to_vec()),
+        (Lang::CSharp, Size::Medium) => ("src/@NAME@/Program.cs", CS_MEDIUM.to_vec()),
+        (Lang::CSharp, Size::Complex) => ("src/@NAME@.Cli/Program.cs", CS_COMPLEX.to_vec()),
     };
     Project {
         files: files.into_iter().map(|(path, text)| (render(path, name, lang), render(text, name, lang))).collect(),
@@ -1466,6 +1479,54 @@ mod tests {
             } else {
                 cargo(&["test", "--offline"]);
                 cargo(&["run", "--offline"]);
+            }
+        }
+    }
+
+    /// Builds, runs and tests every C# template with the .NET SDK (needs `dotnet` and the NuGet
+    /// packages xunit uses, so the first run needs the network).
+    #[test]
+    #[ignore]
+    fn csharp_templates_build_run_and_pass_their_tests() {
+        // CI machines without the .NET 10 SDK skip this test.
+        let sdks = std::process::Command::new("dotnet").arg("--list-sdks").output();
+        if !sdks.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.starts_with("10."))) {
+            eprintln!("skipped: the .NET 10 SDK is not installed");
+            return;
+        }        let parent = scratch("csharp");
+        for size in SIZES {
+            let name = format!("demo-{}", size.setting());
+            let made = create(Lang::CSharp, size, &name, &parent).unwrap();
+            let dotnet = |args: &[&str]| {
+                let out = std::process::Command::new("dotnet")
+                    .args(args)
+                    .current_dir(&made.dir)
+                    .env("DOTNET_NOLOGO", "1")
+                    .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "{size:?}: dotnet {args:?}\n{}\n{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                String::from_utf8_lossy(&out.stdout).into_owned()
+            };
+            let main = made.main_file.to_str().unwrap();
+            // The IDE builds the file's project (F9), then runs it.
+            let built = crate::runner::build(&made.main_file);
+            assert!(built.success, "{size:?}: {:?}", built.diagnostics);
+            let target = built.target.expect("a run target");
+            let out = std::process::Command::new(&target.program)
+                .args(&target.args)
+                .current_dir(&target.cwd)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{size:?}: run {main}: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(!out.stdout.is_empty(), "{size:?}: the program prints something");
+            if matches!(size, Size::Medium | Size::Complex) {
+                dotnet(&["test", "--nologo"]);
             }
         }
     }

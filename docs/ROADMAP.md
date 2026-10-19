@@ -15,7 +15,7 @@ Last updated: 2026-10-20. Latest release: [v0.2.0](https://github.com/V3ct0r-889
 | Markdown preview | Window version: **Alt+F6** / Alt+P / Window menu shows the rendered `.md` next to the editor (iced's Markdown widget: headings, emphasis, lists, quotes, tables, code blocks, links); follows typing and the cursor; links open in the browser or as files. **Options > Preview in** (Alt+O P) picks where it shows: side by side, in its own tab (refreshed when you select it), or in a separate window (follows typing) |
 | Window style | Options > Window style (window version): **Legacy windows** (Turbo Pascal frame line with the name and window number), **Horizontal tabs** (default) or **Vertical tabs** (list on the left); same keys in every style; the choice is remembered |
 | New files | Started without a file, the IDE (both versions) asks which language to use: Rust, Python, or Text / Markdown for anything else; File > New asks too. The last choice is remembered and preselected; the type sets highlighting, the `NONAME.xx` name and the Save As default; `.txt` and `.md` open as plain files |
-| New project | **File > New project...** (Alt+F P, both versions): Rust or Python, size Simple / Low / Medium / Complex, a name and a folder; writes the project and opens its main file. All 8 templates are built, run and tested by `cargo test templates:: -- --ignored` (run in CI) |
+| New project | **File > New project...** (Alt+F P, both versions): Rust, Python or C#, size Simple / Low / Medium / Complex, a name and a folder; writes the project and opens its main file. All 12 templates are built, run and tested by `cargo test templates:: -- --ignored` (run in CI) |
 | Environment variables | **Options > General environment... / Project environment... / Show environment** (both versions, 0.2.14): `NAME=value` files for proxy, PATH and project variables, applied to everything the IDE starts; see the README |
 | Terminal: Replace, mouse, Options | `rust-ide-tui` (0.2.12): Replace all (Ctrl+H / Ctrl+R, one undo), mouse (menus, tabs, cursor, wheel; `--no-mouse` turns it off), Options > Check before run, Options > Line numbers (0.2.13) |
 | Settings dialog | Window version: **Options > Settings...** (Alt+O E) - preview place, window style, Vim mode, check before run, font size, dependencies; keyboard (Up/Down, Left/Right, Enter, letters, Esc) and mouse; changes apply and are remembered at once. The terminal version has no Options menu yet (backlog item 3) |
@@ -40,7 +40,7 @@ Ordered from easiest to hardest. Effort: **S** = small, **M** = medium, **L** = 
 |---|---|---|
 | 1 | Development environments for project sessions: variables (0.2.14), Python .venv (0.2.15) and Rust toolchain (0.2.16, picker 0.2.17) and sessions (0.2.18) are done, the rest is **next** | L |
 | 2 | Terminal version: the rest | L |
-| 3 | C# support: debugger, templates (build / run / highlighting 0.2.21, language server 0.2.22) | L |
+| 3 | C# support: debugger (build / run / highlighting 0.2.21, language server 0.2.22) | L |
 
 ### 1. Development environments for project sessions - L (variables, Python .venv and Rust toolchain done, the rest is next)
 **Phase 1 is done in 0.2.14:** both groups of variables as plain `NAME=value` files
@@ -118,8 +118,9 @@ panel, F5 through `dotnet run`, and ".NET SDK 10" in Options > Dependencies. Bot
   Ubuntu `sudo apt install dotnet-sdk-10.0` (or Microsoft's package feed) and Fedora/RHEL
   `sudo dnf install dotnet-sdk-10.0` are listed but not yet tried on those systems; netcoredbg from its
   GitHub releases.
-- **Templates:** add C# to File > New project (`dotnet new console`, class library + tests,
-  solution with several projects).
+- **Templates - done in 0.2.23:** C# in File > New project (both versions): Simple (console project), Low (a few classes),
+  Medium (`.slnx` solution: library + console app + xunit tests), Complex (util / core / cli + tests +
+  `Directory.Build.props` + CI workflow). Tested by `cargo test templates:: -- --ignored` (skipped without .NET 10).
 - Check before starting the debugger: whether netcoredbg covers breakpoints, stepping and locals on
   Windows and Linux.
 ## Known limitations
