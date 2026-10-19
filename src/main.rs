@@ -91,11 +91,11 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("File", "Alt+F P", "New project: Rust or Python, size Simple/Low/Medium/Complex, a name and a folder"),
     ("File", "Tab / Up / Down", "In the New project dialog: next / previous field; Left/Right or letters change a choice; Enter creates"),
     ("File", "R P C T M or 1-5", "In the language list: Rust, Python, C#, Text, Markdown (Up/Down, Enter, Esc work too)"),
-    ("File", "Alt+X", "Exit (press twice to discard changes)"),
+    ("File", "Alt+X", "Exit (asks to save or discard changes)"),
     ("Window", "F6 / Shift+F6", "Next / previous window"),
     ("Window", "Alt+1 ... Alt+9", "Go to window 1-9"),
     ("Window", "Alt+0", "Window list (Window menu)"),
-    ("Window", "Ctrl+F3", "Close the window (press twice to discard changes)"),
+    ("Window", "Ctrl+F3", "Close the window (asks to save or discard changes)"),
     ("Window", "Alt+F6 / Alt+P", "Markdown preview of a .md file: beside it, in a tab or in a window (Alt+W I chooses)"),
     ("Edit", "Ctrl+Z / Ctrl+Y", "Undo / redo (Ctrl+Shift+Z also redoes)"),
     ("Edit", "Tab / Shift+Tab", "Indent / unindent"),
@@ -619,7 +619,8 @@ struct Ide {
     path: Option<PathBuf>,
     modified: bool,
     menu: Option<Menu>,
-    confirm: Option<Discard>,
+    /// Close or exit waiting for Save / Discard / Cancel, and the button Tab is on.
+    unsaved: Option<(Discard, usize)>,
     building: bool,
     /// Results of the last F9/F5 build.
     diagnostics: Vec<Diagnostic>,
@@ -875,6 +876,8 @@ enum Message {
     NextWindow,
     PrevWindow,
     CloseWindow,
+    /// The unsaved-changes dialog: 0 save, 1 discard, 2 cancel.
+    UnsavedChoice(usize),
     SelectWindow(usize),
     ToggleBreakpoint,
     ClearBreakpoints,
@@ -1103,9 +1106,6 @@ impl Ide {
         if !keeps_menu {
             self.menu = None;
         }
-        // Background LSP events must not cancel a pending "press again to discard".
-        let confirm = if matches!(message, Message::Lsp(_)) { None } else { self.confirm.take() };
-
         match message {
             Message::Edit(action) => self.edit(action),
             Message::ToggleMenu(menu) => {
@@ -1258,12 +1258,13 @@ impl Ide {
             }
             Message::SelectWindow(index) => self.select_window(index),
             Message::CloseWindow => {
-                if self.needs_confirm(confirm, Discard::Close) {
+                if self.needs_confirm(Discard::Close) {
                     return Task::none();
                 }
                 self.close_window();
                 iced::widget::operation::focus(EDITOR)
             }
+            Message::UnsavedChoice(choice) => self.unsaved_choice(choice),
             Message::Opened(None) => Task::none(),
             Message::Save => self.save(AfterSave::Nothing),
             Message::SaveAs => self.save_as(AfterSave::Nothing),
@@ -1280,7 +1281,7 @@ impl Ide {
                 Task::none()
             }
             Message::Exit => {
-                if self.needs_confirm(confirm, Discard::Exit) {
+                if self.needs_confirm(Discard::Exit) {
                     return Task::none();
                 }
                 self.exit_ide()
@@ -1470,6 +1471,9 @@ impl Ide {
                 Task::none()
             }
             Message::Escape => {
+                if self.unsaved.is_some() {
+                    return self.unsaved_choice(2);
+                }
                 if self.language.is_some() {
                     return self.close_language_dialog();
                 }
@@ -2910,6 +2914,24 @@ impl Ide {
 
     /// Arrow keys, Enter and letters for whatever modal thing is open.
     fn navigate(&mut self, key: NavKey) -> Task<Message> {
+        if let Some((_, button)) = self.unsaved {
+            let step = |by: usize| (button + by) % 3;
+            return match key {
+                NavKey::Left | NavKey::Up | NavKey::BackTab => {
+                    self.unsaved.as_mut().unwrap().1 = step(2);
+                    Task::none()
+                }
+                NavKey::Right | NavKey::Down | NavKey::Tab => {
+                    self.unsaved.as_mut().unwrap().1 = step(1);
+                    Task::none()
+                }
+                NavKey::Enter => self.unsaved_choice(button),
+                NavKey::Char('s') => self.unsaved_choice(0),
+                NavKey::Char('d') => self.unsaved_choice(1),
+                NavKey::Char('c') => self.unsaved_choice(2),
+                _ => Task::none(),
+            };
+        }
         if self.language.is_some() {
             return self.language_key(key);
         }
@@ -3384,28 +3406,59 @@ impl Ide {
         Task::batch(tasks)
     }
 
-    /// Returns true (and asks) when unsaved edits would be lost and this is
-    /// the first press of the command.
-    fn needs_confirm(&mut self, previous: Option<Discard>, command: Discard) -> bool {
+    /// Returns true (and opens the Save / Discard / Cancel dialog) when
+    /// unsaved edits would be lost.
+    fn needs_confirm(&mut self, command: Discard) -> bool {
         let unsaved = match command {
             Discard::Close => self.modified,
             Discard::Exit => self.modified_windows() > 0,
         };
-        if !unsaved || previous == Some(command) {
+        if !unsaved {
             return false;
         }
-        let key = match command {
-            Discard::Close => "Ctrl+F3",
-            Discard::Exit => "Alt+X",
-        };
-        let what = if command == Discard::Exit && self.modified_windows() > 1 {
-            format!("{} windows have unsaved changes", self.modified_windows())
-        } else {
-            "Unsaved changes".to_string()
-        };
-        self.status = format!("{what}! Press F2 to save, or {key} again to discard.");
-        self.confirm = Some(command);
+        self.menu = None;
+        self.unsaved = Some((command, 0));
         true
+    }
+
+    /// Answers the unsaved-changes dialog: 0 save, 1 discard, 2 cancel.
+    fn unsaved_choice(&mut self, choice: usize) -> Task<Message> {
+        let Some((command, _)) = self.unsaved.take() else {
+            return Task::none();
+        };
+        let focus = iced::widget::operation::focus(EDITOR);
+        match choice {
+            2 => {
+                self.status = "Cancelled".into();
+                focus
+            }
+            0 => {
+                if self.modified {
+                    if self.path.is_none() {
+                        // Save As is asynchronous; the command can be repeated after it.
+                        self.status = "Name the file, then close again".into();
+                        return self.save_as(AfterSave::Nothing);
+                    }
+                    let _ = self.save(AfterSave::Nothing);
+                    if self.modified {
+                        return focus; // the save failed; the status says why
+                    }
+                }
+                self.run_discard(command, focus)
+            }
+            _ => self.run_discard(command, focus),
+        }
+    }
+
+    /// Carries out Close or Exit once the unsaved edits are dealt with.
+    fn run_discard(&mut self, command: Discard, focus: Task<Message>) -> Task<Message> {
+        match command {
+            Discard::Close => {
+                self.close_window();
+                focus
+            }
+            Discard::Exit => self.exit_ide(),
+        }
     }
 
     fn save(&mut self, after: AfterSave) -> Task<Message> {
@@ -3727,6 +3780,7 @@ impl Ide {
         let popup_open = self.completion.is_some();
         // While a menu, dialog or the help screen is open, keys drive it, not the text.
         let modal = self.menu.is_some()
+            || self.unsaved.is_some()
             || self.help
             || self.deps.is_some()
             || self.language.is_some()
@@ -3846,6 +3900,9 @@ impl Ide {
         if self.help {
             layers = layers.push(help_screen());
         }
+        if let Some((command, button)) = self.unsaved {
+            layers = layers.push(self.unsaved_dialog(command, button));
+        }
         if let Some(menu) = self.menu {
             layers = layers
                 .push(
@@ -3904,6 +3961,43 @@ impl Ide {
                 .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(status_bar_height() + 8.0).left(24.0).right(24.0))
                 .width(Length::Fill)
                 .height(Length::Fill),
+        )
+    }
+
+    fn unsaved_dialog(&self, command: Discard, button: usize) -> Element<'_, Message> {
+        let what = match command {
+            Discard::Exit if self.modified_windows() > 1 => format!("{} windows have unsaved changes (Save keeps only this one).", self.modified_windows()),
+            Discard::Exit => "A window has unsaved changes.".to_string(),
+            Discard::Close => "This window has unsaved changes.".to_string(),
+        };
+        let ask = match command {
+            Discard::Close => "Save before closing?",
+            Discard::Exit => "Save before exiting?",
+        };
+        let body = column![
+            container(text(" Unsaved changes ").color(Color::WHITE))
+                .width(Length::Fill)
+                .padding(2)
+                .style(|_| container::Style::default().background(turbo_blue())),
+            container(column![text(what).color(Color::BLACK), text(ask).color(Color::BLACK)].spacing(4)).padding(16),
+            container(
+                row![
+                    small_button_focus("Save", Some(Message::UnsavedChoice(0)), button == 0),
+                    small_button_focus("Discard", Some(Message::UnsavedChoice(1)), button == 1),
+                    small_button_focus("Cancel", Some(Message::UnsavedChoice(2)), button == 2),
+                ]
+                .spacing(12)
+            )
+            .padding(Padding::default().left(16.0).right(16.0).bottom(8.0)),
+            container(text(" S save   D discard   C or Esc cancel   Tab/Enter choose ").color(Color::BLACK).size(13))
+                .padding([2, 10]),
+        ];
+        opaque(
+            container(container(body).width(420).style(|_| container::Style {
+                border: iced::Border::default().color(Color::BLACK).width(1),
+                ..container::Style::default().background(turbo_gray())
+            }))
+            .center(Length::Fill),
         )
     }
 
@@ -5091,12 +5185,29 @@ mod window_tests {
         }
         send(&mut ide, [Message::SelectWindow(1), Message::Edit(Action::Edit(Edit::Insert('x')))]);
         send(&mut ide, [Message::CloseWindow]);
-        assert_eq!(ide.window_count(), 3, "first Ctrl+F3 only warns");
-        send(&mut ide, [Message::CloseWindow]);
+        assert_eq!(ide.window_count(), 3, "Ctrl+F3 only asks");
+        assert!(ide.unsaved.is_some());
+        send(&mut ide, [Message::UnsavedChoice(2)]);
+        assert_eq!((ide.window_count(), ide.unsaved), (3, None), "Cancel keeps the window");
+        send(&mut ide, [Message::CloseWindow, Message::UnsavedChoice(1)]);
         assert_eq!(ide.window_names(), ["e.rs", "g.rs"]);
         assert_eq!(ide.path.as_deref(), Some(paths[2].as_path()), "the next window becomes active");
         send(&mut ide, [Message::CloseWindow, Message::CloseWindow]);
         assert_eq!(ide.window_names(), ["NONAME.RS"], "the last window turns into an empty one");
+    }
+
+    #[test]
+    fn unsaved_dialog_saves_then_closes() {
+        let paths = files(&["s1.rs", "s2.rs"]);
+        let mut ide = Ide::default();
+        send(&mut ide, [Message::Opened(Some(paths[0].clone())), Message::Opened(Some(paths[1].clone()))]);
+        send(&mut ide, [Message::Edit(Action::Edit(Edit::Insert('x'))), Message::CloseWindow]);
+        assert_eq!(ide.unsaved, Some((Discard::Close, 0)));
+        send(&mut ide, [Message::Nav(NavKey::Tab)]);
+        assert_eq!(ide.unsaved, Some((Discard::Close, 1)));
+        send(&mut ide, [Message::Nav(NavKey::Char('s'))]);
+        assert_eq!(ide.window_count(), 1, "saved and closed");
+        assert!(std::fs::read_to_string(&paths[1]).unwrap().contains('x'));
     }
 
     #[test]
@@ -5105,8 +5216,7 @@ mod window_tests {
         let mut ide = Ide::default();
         send(&mut ide, [Message::Opened(Some(paths[0].clone())), Message::Edit(Action::Edit(Edit::Insert('x')))]);
         send(&mut ide, [Message::Opened(Some(paths[1].clone())), Message::Exit]);
-        assert!(ide.status.starts_with("Unsaved changes"), "{}", ide.status);
-        assert_eq!(ide.confirm, Some(Discard::Exit));
+        assert_eq!(ide.unsaved, Some((Discard::Exit, 0)));
     }
 
     #[test]

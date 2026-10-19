@@ -56,7 +56,7 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | Ctrl+F3 (Alt+F3 in the terminal version) | Close the window |
 | Alt+F6 / Alt+P | Markdown preview on / off (for `.md` files), where Window > Preview in says |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Font larger / smaller / default (window version; remembered) |
-| Alt+X | Exit (press twice to discard unsaved changes) |
+| Alt+X | Exit (asks to save, discard or cancel when there are unsaved changes) |
 
 **Mono theme and two-line status bar** (window version, 0.2.33): **Options > Mono theme** (Alt+O T, also a Settings row) swaps the Turbo Pascal colors for black, white and grays, including the syntax colors; **Options > Two-line status** (Alt+O W) makes the status bar two lines of smaller text: message, tool and position on the first, the function keys on the second. Both are remembered (`theme`, `status_lines` in the settings file).
 
