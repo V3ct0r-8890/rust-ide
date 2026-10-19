@@ -3878,7 +3878,11 @@ impl Ide {
             container(header).width(Length::Fill).padding(2).style(|_| {
                 container::Style::default().background(TURBO_BLUE)
             }),
-            scrollable(column(rows).spacing(6).padding(10)).height(Length::Fill),
+            scrollable(column(rows).spacing(6).padding(Padding::default().top(10).bottom(10).left(10).right(24)))
+                .direction(scrollable::Direction::Vertical(
+                    scrollable::Scrollbar::new().width(10).scroller_width(10).margin(4),
+                ))
+                .height(Length::Fill),
             container(text(message).color(TURBO_RED)).padding([0, 10]),
             container(
                 text(" Up/Down select   I install   C copy   G guide   R re-check   S startup check   Esc close")
