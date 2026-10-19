@@ -168,6 +168,18 @@ variables, in two groups kept apart. Both are plain text files with one `NAME=va
   `rustup toolchain install nightly-x86_64-pc-windows-gnu` (Windows) or
   `rustup toolchain install nightly` (Linux). Remove with `rustup toolchain uninstall <name>`.
 
+## Sessions
+
+When you close the IDE (Alt+X, closing the window, or `:q` in Vim mode) it remembers the files that
+were open, the cursor of each and the window that was active. Start it again **without file names**
+and they come back; the language chooser only appears when there is nothing to restore. Files
+you give on the command line are opened as given and no session is restored.
+
+- The session belongs to the project: the one of the folder you start in, else the one used last
+  (so a shortcut to the program still brings back your work). It is kept in the IDE's settings
+  folder (`sessions\` next to `settings.txt`), never in your project.
+- Files that no longer exist are skipped; unsaved new files are not remembered.
+- To turn it off, put `restore_session=false` in the settings file.
 ## Vim mode
 
 Turn it on in **Options > Vim mode** (remembered between sessions). The status bar shows

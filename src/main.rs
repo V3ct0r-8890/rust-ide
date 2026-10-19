@@ -881,9 +881,15 @@ impl Ide {
         if ide.window_count() > 1 {
             let _ = ide.select_window(0);
         }
-        // Started without a file: ask which language to use.
+        // Started without a file: bring back the last session, else ask which language to use.
         if no_files {
-            ide.language = Some(LanguageDialog { selected: filetype::last_choice(), startup: true });
+            let session = (platform::read_setting("restore_session").as_deref() != Some("false"))
+                .then(|| std::env::current_dir().ok().and_then(|cwd| rust_ide::session::startup(&cwd)))
+                .flatten();
+            match session {
+                Some(session) => ide.restore_session(&session),
+                None => ide.language = Some(LanguageDialog { selected: filetype::last_choice(), startup: true }),
+            }
         }
         let check = if ide.check_at_startup {
             Task::perform(platform::blocking(move || deps::check(os)), |list| Message::DepsChecked(list, true))
@@ -1138,7 +1144,7 @@ impl Ide {
             Message::WindowOpened => Task::none(),
             Message::WindowClosed(id) => {
                 if Some(id) == self.main_window {
-                    iced::exit()
+                    self.exit_ide()
                 } else {
                     if Some(id) == self.preview_window {
                         self.preview_window = None;
@@ -1203,7 +1209,7 @@ impl Ide {
                 if self.needs_confirm(confirm, Discard::Exit) {
                     return Task::none();
                 }
-                iced::exit()
+                self.exit_ide()
             }
             Message::Compile => self.save(AfterSave::Compile),
             Message::SyntaxCheck => self.save(AfterSave::Check),
@@ -1938,6 +1944,74 @@ impl Ide {
         self.lsp_sync_doc();
         self.status = format!("Opened {}", path.display());
         true
+    }
+
+    // ----- Sessions -----
+
+    /// The open files with their cursors, in window order.
+    fn session_snapshot(&self) -> rust_ide::session::Session {
+        use rust_ide::session::{Entry, Session};
+        let entry = |path: &Option<PathBuf>, content: &text_editor::Content, preview: bool| -> Option<Entry> {
+            let path = path.clone().filter(|_| !preview)?;
+            let at = content.cursor().position;
+            let column = content.line(at.line).and_then(|l| l.text.get(..at.column).map(|s| s.chars().count())).unwrap_or(at.column);
+            Some(Entry { path, line: at.line, column })
+        };
+        let mut session = Session::default();
+        for index in 0..self.window_count() {
+            let found = if index == self.active {
+                entry(&self.path, &self.content, self.preview_tab.is_some())
+            } else {
+                let b = &self.background[if index > self.active { index - 1 } else { index }];
+                entry(&b.path, &b.content, b.preview.is_some())
+            };
+            if let Some(found) = found {
+                if index == self.active {
+                    session.active = session.files.len();
+                }
+                session.files.push(found);
+            }
+        }
+        session
+    }
+
+    /// Remembers the open files for the next start (the real program only).
+    fn save_session(&self) {
+        if !self.persist_settings {
+            return;
+        }
+        let session = self.session_snapshot();
+        if session.files.is_empty() {
+            if let Ok(cwd) = std::env::current_dir() {
+                rust_ide::session::forget(&rust_ide::env::project_root(&cwd));
+            }
+        } else {
+            let _ = rust_ide::session::save(&session);
+        }
+    }
+
+    fn exit_ide(&self) -> Task<Message> {
+        self.save_session();
+        iced::exit()
+    }
+
+    /// Opens the files of an earlier session, each with its cursor, on the window that was active.
+    fn restore_session(&mut self, session: &rust_ide::session::Session) {
+        let mut opened = 0;
+        for entry in &session.files {
+            if self.open_path(&entry.path) {
+                opened += 1;
+                let text = self.content.line(entry.line).map(|l| l.text.into_owned()).unwrap_or_default();
+                let column = text.char_indices().nth(entry.column).map_or(text.len(), |(i, _)| i);
+                self.place_clamped(entry.line, column);
+            }
+        }
+        if let Some(active) = session.files.get(session.active) {
+            if let Some(index) = self.window_index_of(&active.path) {
+                let _ = self.select_window(index);
+            }
+        }
+        self.status = format!("Restored the last session: {opened} file(s)");
     }
 
     /// The window position of the background list entry `position`.
@@ -3122,14 +3196,14 @@ impl Ide {
                 vim::Effect::Quit if self.modified => {
                     self.status = "No write since last change (add ! to override)".into();
                 }
-                vim::Effect::Quit | vim::Effect::ForceQuit => tasks.push(iced::exit()),
+                vim::Effect::Quit | vim::Effect::ForceQuit => tasks.push(self.exit_ide()),
                 vim::Effect::SaveQuit => {
                     if self.path.is_none() {
                         self.status = "No file name (use F2 to save first)".into();
                     } else {
                         tasks.push(self.save(AfterSave::Nothing));
                         if !self.modified {
-                            tasks.push(iced::exit());
+                            tasks.push(self.exit_ide());
                         }
                     }
                 }
@@ -5123,6 +5197,46 @@ mod language_tests {
         assert_eq!(ide.toolchain_label(), "  Rust default");
         ide.path = Some(root.join("notes.py"));
         assert_eq!(ide.toolchain_label(), "", "only Rust files show it");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_open_files_and_cursors_come_back_in_the_next_session() {
+        let _settings = isolate_settings();
+        let root = std::env::temp_dir().join("rust-ide-gui-session");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let (a, b) = (root.join("a.rs"), root.join("b.py"));
+        std::fs::write(&a, "fn main() {}\nlet x = 1;\n").unwrap();
+        std::fs::write(&b, "print('héllo')\nprint(2)\n").unwrap();
+
+        let mut ide = Ide::default();
+        ide.persist_settings = true;
+        assert!(ide.open_path(&a) && ide.open_path(&b));
+        ide.place_clamped(0, "print('h".len() + 2); // after the "é" (2 bytes)
+        let _ = ide.select_window(0);
+        ide.place_clamped(1, 4);
+        let snapshot = ide.session_snapshot();
+        assert_eq!(snapshot.files.len(), 2);
+        assert_eq!((snapshot.active, snapshot.files[0].line, snapshot.files[0].column), (0, 1, 4));
+        assert_eq!((snapshot.files[1].line, snapshot.files[1].column), (0, 9), "columns are in characters");
+        ide.save_session();
+
+        let mut next = Ide::default();
+        let session = rust_ide::session::startup(&root).expect("the session was saved");
+        next.restore_session(&session);
+        assert_eq!(next.window_count(), 2);
+        assert_eq!(next.path.as_deref(), Some(a.as_path()), "the active window is back");
+        assert_eq!((next.content.cursor().position.line, next.content.cursor().position.column), (1, 4));
+        let _ = next.select_window(1);
+        assert_eq!(next.content.cursor().position.column, "print('h".len() + 2, "converted back to bytes");
+
+        // Without persistence (the tests) nothing is written.
+        rust_ide::session::forget(&root);
+        let mut quiet = Ide::default();
+        quiet.open_path(&a);
+        quiet.save_session();
+        assert!(rust_ide::session::load(&root).is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 

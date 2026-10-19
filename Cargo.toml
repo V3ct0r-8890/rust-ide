@@ -1,6 +1,6 @@
 [package]
 name = "rust-ide"
-version = "0.2.17"
+version = "0.2.18"
 edition = "2024"
 description = "Turbo Pascal-style IDE for Rust and Python"
 repository = "https://github.com/V3ct0r-8890/rust-ide"

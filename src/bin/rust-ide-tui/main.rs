@@ -48,9 +48,15 @@ fn main() -> io::Result<()> {
     let mut app = App::new(&files);
     app.check_before = rust_ide::platform::read_setting("check_before").as_deref() == Some("true");
     app.line_numbers = rust_ide::platform::read_setting("line_numbers").as_deref() == Some("true");
-    // Started without a file: ask which language to use.
+    // Started without a file: bring back the last session, else ask which language to use.
     if files.is_empty() {
-        app.ask_language(true);
+        let session = (rust_ide::platform::read_setting("restore_session").as_deref() != Some("false"))
+            .then(|| std::env::current_dir().ok().and_then(|cwd| rust_ide::session::startup(&cwd)))
+            .flatten();
+        match session {
+            Some(session) => app.restore_session(&session),
+            None => app.ask_language(true),
+        }
     }
     let result = run(&mut terminal, app, mouse);
     let _ = execute!(io::stdout(), SetCursorStyle::DefaultUserShape, DisableMouseCapture);
@@ -82,7 +88,10 @@ fn run(terminal: &mut DefaultTerminal, mut app: App, mouse: bool) -> io::Result<
         loop {
             effect = match effect {
                 Effect::None => break,
-                Effect::Quit => return Ok(()),
+                Effect::Quit => {
+                    app.save_session();
+                    return Ok(());
+                }
                 Effect::Build { path, run } => {
                     // Show "Compiling..." before the (blocking) build.
                     terminal.draw(|frame| ui::draw(frame, &app))?;

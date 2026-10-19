@@ -252,6 +252,50 @@ impl App {
         app
     }
 
+    // ----- Sessions -----
+
+    /// The open files with their cursors, in window order.
+    pub fn session_snapshot(&self) -> rust_ide::session::Session {
+        let mut session = rust_ide::session::Session::default();
+        for (index, window) in self.windows.iter().enumerate() {
+            if let Some(path) = &window.path {
+                if index == self.active {
+                    session.active = session.files.len();
+                }
+                session.files.push(rust_ide::session::Entry { path: path.clone(), line: window.row, column: window.char_col() });
+            }
+        }
+        session
+    }
+
+    /// Remembers the open files for the next start.
+    pub fn save_session(&self) {
+        let session = self.session_snapshot();
+        if session.files.is_empty() {
+            if let Ok(cwd) = std::env::current_dir() {
+                rust_ide::session::forget(&rust_ide::env::project_root(&cwd));
+            }
+        } else {
+            let _ = rust_ide::session::save(&session);
+        }
+    }
+
+    /// Opens the files of an earlier session, each with its cursor, on the window that was active.
+    pub fn restore_session(&mut self, session: &rust_ide::session::Session) {
+        let mut opened = 0;
+        for entry in &session.files {
+            if entry.path.is_file() {
+                self.open(&entry.path);
+                self.buffer_mut().go_to(entry.line, entry.column);
+                opened += 1;
+            }
+        }
+        if let Some(index) = session.files.get(session.active).and_then(|e| self.windows.iter().position(|w| w.path.as_deref() == Some(e.path.as_path()))) {
+            self.select(index);
+        }
+        self.status = format!("Restored the last session: {opened} file(s)");
+    }
+
     pub fn buffer(&self) -> &Buffer {
         &self.windows[self.active]
     }
@@ -1562,6 +1606,38 @@ three");
         assert!(app.buffer().path.is_none());
         assert!(app.buffer().text().contains("# General:"));
         assert!(app.buffer().text().contains("# Project:"));
+    }
+
+    #[test]
+    fn the_open_files_and_cursors_come_back_in_the_next_session() {
+        let _settings = isolate_settings();
+        let root = std::env::temp_dir().join("rust-ide-tui-session");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let (a, b) = (root.join("a.rs"), root.join("b.py"));
+        std::fs::write(&a, "fn main() {}\nlet x = 1;\n").unwrap();
+        std::fs::write(&b, "print(1)\nprint(\"héllo\")\n").unwrap();
+
+        let mut app = App::new(&[a.clone(), b.clone()]);
+        app.select(1);
+        app.buffer_mut().go_to(1, 9);
+        app.select(0);
+        app.buffer_mut().go_to(1, 4);
+        let snapshot = app.session_snapshot();
+        assert_eq!((snapshot.files.len(), snapshot.active), (2, 0));
+        assert_eq!((snapshot.files[0].line, snapshot.files[0].column, snapshot.files[1].column), (1, 4, 9));
+        app.save_session();
+
+        let mut next = App::new(&[]);
+        let session = rust_ide::session::startup(&root).expect("the session was saved");
+        next.restore_session(&session);
+        assert_eq!(next.windows.iter().filter(|w| w.path.is_some()).count(), 2, "the blank window was reused");
+        assert_eq!(next.buffer().path.as_deref(), Some(a.as_path()));
+        assert_eq!((next.buffer().row, next.buffer().char_col()), (1, 4));
+        assert!(next.status.contains("Restored"), "{}", next.status);
+        next.select(1);
+        assert_eq!((next.buffer().row, next.buffer().char_col()), (1, 9));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
