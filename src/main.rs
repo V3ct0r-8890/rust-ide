@@ -86,7 +86,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Run", "Alt+F5", "Show / hide the Output window (User screen)"),
     ("Run", "Ctrl+F2", "Program reset: stop the running program"),
     ("Run", "Enter", "In the Output window: send the typed input"),
-    ("Options", "Alt+O D", "Dependencies: Up/Down, I install, C copy, G guide, R re-check, S startup check"),
+    ("Options", "Alt+O D", "Dependencies: Up/Down/Tab/PgUp/PgDn, I install, C copy, G guide, R re-check, S startup check"),
     ("Options", "Alt+O E", "Settings dialog: preview place, window style, Vim, check before run, line numbers, font size, dependencies"),
     ("Options", "Alt+O G", "General environment: proxy, PATH ... for everything the IDE starts (NAME=value file)"),
     ("Options", "Alt+O O", "Project environment: variables for this project (.rust-ide/env, overrides the general ones)"),
@@ -221,6 +221,8 @@ enum NavKey {
     End,
     Enter,
     Tab,
+    /// Shift+Tab.
+    BackTab,
     Char(char),
 }
 
@@ -486,6 +488,7 @@ fn nav_key(key: &Key, modifiers: Modifiers, text: Option<&str>) -> Option<NavKey
         Key::Named(Named::Home) => Some(NavKey::Home),
         Key::Named(Named::End) => Some(NavKey::End),
         Key::Named(Named::Enter) => Some(NavKey::Enter),
+        Key::Named(Named::Tab) if modifiers.shift() => Some(NavKey::BackTab),
         Key::Named(Named::Tab) => Some(NavKey::Tab),
         _ if modifiers.control() || modifiers.alt() => None,
         _ => text?.chars().find(|c| !c.is_control()).map(|c| NavKey::Char(c.to_ascii_lowercase())),
@@ -1841,7 +1844,7 @@ impl Ide {
         let Some(dialog) = &mut self.language else { return Task::none() };
         let count = filetype::FILE_TYPES.len();
         match key {
-            NavKey::Up => dialog.selected = (dialog.selected + count - 1) % count,
+            NavKey::Up | NavKey::BackTab => dialog.selected = (dialog.selected + count - 1) % count,
             NavKey::Down | NavKey::Tab => dialog.selected = (dialog.selected + 1) % count,
             NavKey::Home => dialog.selected = 0,
             NavKey::End => dialog.selected = count - 1,
@@ -2386,7 +2389,7 @@ impl Ide {
         let row = dialog.row;
         let text_row = row == PROJECT_NAME || row == PROJECT_FOLDER;
         match key {
-            NavKey::Up => self.project_focus((row + PROJECT_ROWS - 1) % PROJECT_ROWS),
+            NavKey::Up | NavKey::BackTab => self.project_focus((row + PROJECT_ROWS - 1) % PROJECT_ROWS),
             NavKey::Down | NavKey::Tab => self.project_focus((row + 1) % PROJECT_ROWS),
             // In a text field the keys edit the text (Enter creates, through on_submit).
             _ if text_row => Task::none(),
@@ -2473,7 +2476,7 @@ impl Ide {
         let Some(dialog) = &mut self.settings else { return Task::none() };
         let row = dialog.selected;
         match key {
-            NavKey::Up => dialog.selected = (row + SETTINGS_ROWS - 1) % SETTINGS_ROWS,
+            NavKey::Up | NavKey::BackTab => dialog.selected = (row + SETTINGS_ROWS - 1) % SETTINGS_ROWS,
             NavKey::Down | NavKey::Tab => dialog.selected = (row + 1) % SETTINGS_ROWS,
             NavKey::Home => dialog.selected = 0,
             NavKey::End => dialog.selected = SETTINGS_ROWS - 1,
@@ -2495,7 +2498,7 @@ impl Ide {
         let Some(dialog) = &mut self.toolchains else { return Task::none() };
         let rows = dialog.choices.len() + 1;
         match key {
-            NavKey::Up => dialog.selected = (dialog.selected + rows - 1) % rows,
+            NavKey::Up | NavKey::BackTab => dialog.selected = (dialog.selected + rows - 1) % rows,
             NavKey::Down | NavKey::Tab => dialog.selected = (dialog.selected + 1) % rows,
             NavKey::Home => dialog.selected = 0,
             NavKey::End => dialog.selected = rows - 1,
@@ -2887,6 +2890,9 @@ impl Ide {
         if self.search.is_some() && key == NavKey::Tab {
             return iced::widget::operation::focus_next();
         }
+        if self.search.is_some() && key == NavKey::BackTab {
+            return iced::widget::operation::focus_previous();
+        }
         Task::none()
     }
 
@@ -2906,7 +2912,7 @@ impl Ide {
             enabled[next]
         };
         match key {
-            NavKey::Left => self.open_menu(step(-1)),
+            NavKey::Left | NavKey::BackTab => self.open_menu(step(-1)),
             NavKey::Right | NavKey::Tab => self.open_menu(step(1)),
             NavKey::Up => {
                 self.menu_item = move_item(self.menu_item, false);
@@ -2937,8 +2943,10 @@ impl Ide {
         let count = dialog.list.len();
         let busy = dialog.checking || dialog.installing.is_some();
         match key {
-            NavKey::Up if count > 0 => dialog.selected = (dialog.selected + count - 1) % count,
-            NavKey::Down if count > 0 => dialog.selected = (dialog.selected + 1) % count,
+            NavKey::Up | NavKey::BackTab if count > 0 => dialog.selected = (dialog.selected + count - 1) % count,
+            NavKey::Down | NavKey::Tab if count > 0 => dialog.selected = (dialog.selected + 1) % count,
+            NavKey::PageUp => dialog.selected = dialog.selected.saturating_sub(4),
+            NavKey::PageDown => dialog.selected = (dialog.selected + 4).min(count.saturating_sub(1)),
             NavKey::Home => dialog.selected = 0,
             NavKey::End => dialog.selected = count.saturating_sub(1),
             _ => {}
@@ -2948,7 +2956,7 @@ impl Ide {
         let can_install = dep.is_some_and(|d| d.auto.is_some()) && !busy;
         let install_text = dep.map(|d| d.install.clone());
         // Keep the selected row in view: the rows are about the same height.
-        let scroll = if matches!(key, NavKey::Up | NavKey::Down | NavKey::Home | NavKey::End) && count > 1 {
+        let scroll = if matches!(key, NavKey::Up | NavKey::Down | NavKey::Tab | NavKey::BackTab | NavKey::PageUp | NavKey::PageDown | NavKey::Home | NavKey::End) && count > 1 {
             let y = selected as f32 / (count - 1) as f32;
             iced::widget::operation::snap_to(DEPS_SCROLL, scrollable::RelativeOffset { x: 0.0, y })
         } else {
@@ -4766,6 +4774,10 @@ mod keyboard_tests {
         assert_eq!(ide.status, "Command copied to the clipboard");
         send(&mut ide, [Message::Nav(NavKey::Down)]);
         assert_eq!(ide.deps.as_ref().map(|d| d.selected), Some(0), "wraps around");
+        send(&mut ide, [Message::Nav(NavKey::Tab)]);
+        assert_eq!(ide.deps.as_ref().map(|d| d.selected), Some(1), "Tab moves down");
+        send(&mut ide, [Message::Nav(NavKey::BackTab), Message::Nav(NavKey::BackTab)]);
+        assert_eq!(ide.deps.as_ref().map(|d| d.selected), Some(1), "Shift+Tab moves up and wraps");
     }
 
     #[test]
