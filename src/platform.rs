@@ -379,6 +379,19 @@ pub fn write_setting(key: &str, value: &str) -> std::io::Result<()> {
     std::fs::write(path, lines.join("\n") + "\n")
 }
 
+/// The folder of the file last opened or saved, if it still exists.
+pub fn last_dir() -> Option<std::path::PathBuf> {
+    let dir = std::path::PathBuf::from(read_setting("last_dir")?);
+    dir.is_dir().then_some(dir)
+}
+
+/// Remembers the folder of ile as the one the file dialogs start in.
+pub fn remember_dir(file: &std::path::Path) {
+    if let Some(dir) = file.parent().filter(|d| d.is_dir()) {
+        let _ = write_setting("last_dir", &dir.to_string_lossy());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

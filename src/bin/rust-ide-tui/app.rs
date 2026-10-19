@@ -214,6 +214,8 @@ pub struct App {
     pub check_before: bool,
     /// Options > Line numbers: a column of line numbers left of the text.
     pub line_numbers: bool,
+    /// Remember the folder of opened files (off in tests, so they leave the settings alone).
+    pub remember_dir: bool,
     /// After a check that finds no errors: build (and run when true).
     then_build: Option<bool>,
     /// A pending "press again to discard" for this action.
@@ -235,6 +237,7 @@ impl App {
             replace_query: String::new(),
             check_before: false,
             line_numbers: false,
+            remember_dir: false,
             then_build: None,
             confirm: None,
             last_run: None,
@@ -526,6 +529,7 @@ impl App {
                     .as_deref()
                     .and_then(Path::parent)
                     .map(Path::to_path_buf)
+                    .or_else(rust_ide::platform::last_dir)
                     .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
                 self.mode = Mode::Open(OpenDialog::new(dir));
             }
@@ -933,6 +937,9 @@ impl App {
                 } else {
                     self.windows.insert(self.active + 1, buffer);
                     self.active += 1;
+                }
+                if self.remember_dir {
+                    rust_ide::platform::remember_dir(path);
                 }
                 self.status = format!("Opened {}", path.display());
             }
@@ -1380,6 +1387,23 @@ pub(crate) mod tests {
         assert!(matches!(app.mode, Mode::Language { selected: 3, .. }));
         app.handle(key(KeyCode::Enter));
         assert_eq!(app.buffer().ext, Some("md"));
+    }
+
+    #[test]
+    fn the_open_dialog_starts_in_the_folder_used_last() {
+        let _settings = isolate_settings();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tui-tests").join("lastdir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        let mut app = App::new(&[]);
+        app.remember_dir = true;
+        app.open(&file);
+        assert_eq!(rust_ide::platform::last_dir().as_deref(), Some(dir.as_path()));
+        let mut other = App::new(&[]);
+        other.act(Action::Open);
+        let Mode::Open(dialog) = &other.mode else { panic!() };
+        assert_eq!(dialog.dir, dir);
     }
 
     #[test]

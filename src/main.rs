@@ -916,6 +916,18 @@ impl Ide {
     /// Saves a setting for next time, but only in the real program: `Ide::default()`
     /// (used by the tests) never touches a settings file unless a test turns
     /// `persist_settings` on.
+    /// Where the Open and Save As dialogs start: the active file's folder, else the last one used.
+    fn dialog_dir(&self) -> Option<PathBuf> {
+        let own = self.path.as_deref().and_then(Path::parent).filter(|d| d.is_dir()).map(Path::to_path_buf);
+        own.or_else(platform::last_dir)
+    }
+
+    fn remember_dir(&mut self, file: &Path) {
+        if self.persist_settings {
+            platform::remember_dir(file);
+        }
+    }
+
     fn save_setting(&mut self, key: &str, value: &str) {
         if !self.persist_settings {
             return;
@@ -1177,8 +1189,12 @@ impl Ide {
                 iced::widget::operation::focus(EDITOR)
             }
             Message::Open => {
+                let mut dialog = rfd::AsyncFileDialog::new();
+                if let Some(dir) = self.dialog_dir() {
+                    dialog = dialog.set_directory(dir);
+                }
                 Task::perform(
-                    rfd::AsyncFileDialog::new()
+                    dialog
                         .set_title("Open")
                         .add_filter("Source and text", &["rs", "py", "pyw", "txt", "md"])
                         .add_filter("All files", &["*"])
@@ -1187,6 +1203,7 @@ impl Ide {
                 )
             }
             Message::Opened(Some(path)) => {
+                self.remember_dir(&path);
                 self.open_path(&path);
                 iced::widget::operation::focus(EDITOR)
             }
@@ -1207,6 +1224,7 @@ impl Ide {
             Message::Save => self.save(AfterSave::Nothing),
             Message::SaveAs => self.save_as(AfterSave::Nothing),
             Message::SaveAsPicked(Some(path), after) => {
+                self.remember_dir(&path);
                 self.path = Some(path);
                 self.modified = true; // force a write to the new location
                 let task = self.save(after);
@@ -1778,7 +1796,7 @@ impl Ide {
             Some(ext) => ext.to_string_lossy().into_owned(),
             None => self.untitled_ext.unwrap_or(filetype::DEFAULT_EXT).to_string(),
         };
-        save_as_dialog(after, self.suggested_name(), ext)
+        save_as_dialog(after, self.suggested_name(), ext, self.dialog_dir())
     }
 
     // ----- New file: choose a language -----
@@ -4099,8 +4117,11 @@ fn run_build(path: &Path, after: AfterSave, check_first: bool) -> (BuildResult, 
     (runner::build(path), false)
 }
 
-fn save_as_dialog(after: AfterSave, name: String, ext: String) -> Task<Message> {
+fn save_as_dialog(after: AfterSave, name: String, ext: String, dir: Option<PathBuf>) -> Task<Message> {
     let mut dialog = rfd::AsyncFileDialog::new().set_title("Save As").set_file_name(name);
+    if let Some(dir) = dir {
+        dialog = dialog.set_directory(dir);
+    }
     // The file's own type comes first in the list of types.
     let mut kinds: Vec<&filetype::FileType> = filetype::FILE_TYPES.iter().collect();
     kinds.sort_by_key(|kind| kind.ext != ext);

@@ -47,6 +47,7 @@ fn main() -> io::Result<()> {
     }
     let mut app = App::new(&files);
     app.check_before = rust_ide::platform::read_setting("check_before").as_deref() == Some("true");
+    app.remember_dir = true;
     app.line_numbers = rust_ide::platform::read_setting("line_numbers").as_deref() == Some("true");
     // Started without a file: bring back the last session, else ask which language to use.
     if files.is_empty() {
