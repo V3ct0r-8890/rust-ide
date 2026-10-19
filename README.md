@@ -142,6 +142,13 @@ variables, in two groups kept apart. Both are plain text files with one `NAME=va
   installs `requirements.txt` (or the project itself with `pip install -e .` when it has a
   `pyproject.toml` / `setup.py`). F5 and the syntax check then use the `.venv` interpreter (the
   debugger and language server already did). The environment variables above apply to pip too.
+- **Options > Rust toolchain...** (Alt+O U): choose the Rust toolchain for the project (`stable`,
+  `nightly`, `1.85.0`, ...; empty goes back to the default). It is saved as `RUSTUP_TOOLCHAIN=` in
+  the project environment, so builds, runs, the debugger and rust-analyzer use it (restart the
+  language server by reopening the file after a change). A `rust-toolchain.toml` / `rust-toolchain`
+  file in the project is honoured too; the IDE's own choice wins. The status bar shows `Rust
+  <toolchain>` while a Rust file is open, and Show environment names the source. The toolchain must
+  already be installed (`rustup toolchain install nightly`).
 
 ## Vim mode
 

@@ -293,7 +293,13 @@ pub fn describe(dir: Option<&Path>) -> String {
     };
     section("General", general_path(), &general(), &mut out);
     match dir {
-        Some(dir) => section("Project", Some(project_path(dir)), &project(dir), &mut out),
+        Some(dir) => {
+            section("Project", Some(project_path(dir)), &project(dir), &mut out);
+            out.push_str(&match rust_toolchain(dir) {
+                Some((name, from)) => format!("\n# Rust toolchain: {name} (from {from})\n"),
+                None => "\n# Rust toolchain: the rustup default (set one in Options > Rust toolchain)\n".to_string(),
+            });
+        }
         None => out.push_str("\n# Project: open a file of a project to see its environment\n"),
     }
     out
@@ -304,9 +310,106 @@ pub fn merged(dir: Option<&Path>) -> HashMap<String, String> {
     effective(dir).into_iter().collect()
 }
 
+/// The Rust toolchain a project builds with and where that choice comes from:
+/// `RUSTUP_TOOLCHAIN` in the environment files, else the nearest
+/// `rust-toolchain.toml` / `rust-toolchain`. `None` means rustup's default.
+pub fn rust_toolchain(dir: &Path) -> Option<(String, String)> {
+    let vars = effective(Some(dir));
+    if let Some((_, value)) = vars.iter().find(|(k, _)| key(k) == key("RUSTUP_TOOLCHAIN")) {
+        if !value.trim().is_empty() {
+            return Some((value.trim().to_string(), "RUSTUP_TOOLCHAIN in the environment".to_string()));
+        }
+    }
+    dir.ancestors().find_map(|d| {
+        let toml = d.join("rust-toolchain.toml");
+        let plain = d.join("rust-toolchain");
+        let channel = std::fs::read_to_string(&toml)
+            .ok()
+            .and_then(|text| toolchain_channel(&text, true))
+            .map(|c| (c, "rust-toolchain.toml"))
+            .or_else(|| {
+                let text = std::fs::read_to_string(&plain).ok()?;
+                // The old file is a bare channel name; a TOML one may also use this name.
+                toolchain_channel(&text, text.contains('=')).map(|c| (c, "rust-toolchain"))
+            })?;
+        Some((channel.0, channel.1.to_string()))
+    })
+}
+
+/// The channel named by a toolchain file's text.
+fn toolchain_channel(text: &str, toml: bool) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if !toml {
+            return Some(line.to_string());
+        }
+        if let Some(rest) = line.strip_prefix("channel") {
+            let value = rest.trim_start().strip_prefix('=')?.trim();
+            let value = value.split('#').next().unwrap_or("").trim().trim_matches(|c| c == '"' || c == '\'');
+            return (!value.is_empty()).then(|| value.to_string());
+        }
+    }
+    None
+}
+
+/// Whether `name` can be a toolchain name (`stable`, `1.85.0`, `nightly-2025-01-01`,
+/// `stable-x86_64-pc-windows-gnu`).
+pub fn valid_toolchain(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+/// Sets (or, with `None`, removes) one variable in the project environment file,
+/// creating the file when needed. Other lines are kept as they are.
+pub fn set_project_var(dir: &Path, name: &str, value: Option<&str>) -> std::io::Result<PathBuf> {
+    let path = ensure_project_file(dir)?;
+    let text = std::fs::read_to_string(&path)?;
+    let mut lines: Vec<String> = Vec::new();
+    let mut done = false;
+    for line in text.lines() {
+        let body = line.trim().strip_prefix("export ").unwrap_or(line.trim());
+        let is_it = body.split_once('=').is_some_and(|(n, _)| key(n.trim()) == key(name));
+        if !is_it {
+            lines.push(line.to_string());
+        } else if let (false, Some(value)) = (done, value) {
+            lines.push(format!("{name}={value}"));
+            done = true;
+        }
+    }
+    if let (false, Some(value)) = (done, value) {
+        lines.push(format!("{name}={value}"));
+    }
+    std::fs::write(&path, lines.join("\n") + "\n")?;
+    Ok(path)
+}
+
+/// Chooses the Rust toolchain of the project (`None` goes back to the default).
+pub fn set_rust_toolchain(dir: &Path, name: Option<&str>) -> Result<String, String> {
+    if let Some(name) = name {
+        if !valid_toolchain(name) {
+            return Err(format!("\"{name}\" is not a toolchain name (examples: stable, nightly, 1.85.0)"));
+        }
+    }
+    set_project_var(dir, "RUSTUP_TOOLCHAIN", name).map_err(|e| format!("Cannot write the project environment: {e}"))?;
+    Ok(match name {
+        Some(name) => format!("Rust toolchain of {}: {name}", project_root(dir).display()),
+        None => "Rust toolchain: back to the default (or rust-toolchain.toml)".to_string(),
+    })
+}
+
+/// The toolchain as the status line shows it for a Rust file: `Rust nightly`.
+pub fn toolchain_label(dir: &Path) -> String {
+    rust_toolchain(dir).map_or_else(|| "Rust default".to_string(), |(name, _)| format!("Rust {name}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tests that point `RUST_IDE_GENERAL_ENV_FILE` somewhere take turns.
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn none(_: &str) -> Option<String> {
         None
@@ -377,7 +480,6 @@ mod tests {
         let root = scratch("layers");
         std::fs::create_dir_all(root.join(".git")).unwrap();
         // SAFETY: only tests in this module use this variable (they take turns below).
-        static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = TURN.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("RUST_IDE_GENERAL_ENV_FILE", root.join("environment.env")) };
         std::fs::write(
@@ -433,6 +535,42 @@ mod tests {
         std::fs::write(other.join("Cargo.toml"), "").unwrap();
         ensure_project_file(&other).unwrap();
         assert!(!other.join(".gitignore").exists());
+    }
+
+    #[test]
+    fn the_toolchain_comes_from_the_environment_or_the_toolchain_file() {
+        let _guard = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let root = scratch("toolchain");
+        unsafe { std::env::set_var("RUST_IDE_GENERAL_ENV_FILE", root.join("none.env")) };
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        assert_eq!(rust_toolchain(&src), None);
+        assert_eq!(toolchain_label(&src), "Rust default");
+
+        std::fs::write(root.join("rust-toolchain.toml"), "[toolchain]\nchannel = \"nightly-2025-01-01\" # pinned\ncomponents = [\"clippy\"]\n").unwrap();
+        assert_eq!(rust_toolchain(&src), Some(("nightly-2025-01-01".into(), "rust-toolchain.toml".into())));
+        std::fs::remove_file(root.join("rust-toolchain.toml")).unwrap();
+        std::fs::write(root.join("rust-toolchain"), "1.85.0\n").unwrap();
+        assert_eq!(rust_toolchain(&src), Some(("1.85.0".into(), "rust-toolchain".into())));
+
+        // The IDE's own choice wins over the file, keeps other lines and can be removed.
+        set_project_var(&root, "KEEP", Some("1")).unwrap();
+        set_rust_toolchain(&root, Some("beta")).unwrap();
+        assert_eq!(rust_toolchain(&src), Some(("beta".into(), "RUSTUP_TOOLCHAIN in the environment".into())));
+        assert_eq!(toolchain_label(&src), "Rust beta");
+        set_rust_toolchain(&root, Some("nightly")).unwrap();
+        let file = std::fs::read_to_string(project_path(&root)).unwrap();
+        assert_eq!(file.matches("RUSTUP_TOOLCHAIN=").count(), 1, "{file}");
+        assert!(file.contains("KEEP=1") && file.contains("RUSTUP_TOOLCHAIN=nightly"), "{file}");
+        assert!(describe(Some(&src)).contains("# Rust toolchain: nightly"));
+        set_rust_toolchain(&root, None).unwrap();
+        assert!(!std::fs::read_to_string(project_path(&root)).unwrap().contains("RUSTUP_TOOLCHAIN="));
+        assert_eq!(rust_toolchain(&src).unwrap().0, "1.85.0");
+
+        assert!(set_rust_toolchain(&root, Some("bad name; x")).is_err());
+        assert!(valid_toolchain("stable-x86_64-pc-windows-gnu") && !valid_toolchain(""));
+        unsafe { std::env::remove_var("RUST_IDE_GENERAL_ENV_FILE") };
     }
 
     #[test]

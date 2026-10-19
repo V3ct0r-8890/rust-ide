@@ -253,11 +253,13 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let buffer = app.buffer();
     let position = format!(" {}:{} ", buffer.row + 1, buffer.char_col() + 1);
     let keys = " F1 Help  F2 Save  F3 Open  F5 Run  F9 Compile  F10 Menu ";
-    let room = (area.width as usize).saturating_sub(keys.len() + position.len());
+    let toolchain = app.toolchain_label();
+    let room = (area.width as usize).saturating_sub(keys.len() + toolchain.len() + position.len());
     let status: String = app.status.chars().take(room).collect();
     let line = Line::from(vec![
         Span::styled(keys, BAR),
         Span::styled(format!("{status:<room$}"), BAR.fg(DARK_RED)),
+        Span::styled(toolchain, BAR),
         Span::styled(position, BAR),
     ]);
     frame.render_widget(Paragraph::new(line).style(BAR), area);
@@ -307,6 +309,7 @@ fn draw_prompt(frame: &mut Frame, kind: PromptKind, input: &str) {
         PromptKind::SaveAs => "Save file as",
         PromptKind::Find => "Find",
         PromptKind::GoTo => "Go to line number",
+        PromptKind::Toolchain => "Rust toolchain of this project",
         PromptKind::ReplaceFind => "Replace: text to find",
         PromptKind::ReplaceWith => "Replace with",
     };
@@ -319,6 +322,7 @@ fn draw_prompt(frame: &mut Frame, kind: PromptKind, input: &str) {
     frame.render_widget(Paragraph::new(format!(" {input}")).style(EDITOR.fg(Color::White)), field);
     let hint_text = match kind {
         PromptKind::SaveAs => " Enter OK  Esc Cancel  (no extension: file type is added)",
+        PromptKind::Toolchain => " Enter OK  Esc Cancel  (stable, nightly, 1.85.0 ...; empty = default)",
         _ => " Enter OK   Esc Cancel",
     };
     frame.render_widget(Paragraph::new(hint_text).style(BAR), hint);
@@ -374,6 +378,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Options > Project environment", "Edit the variables of this project (.rust-ide/env; they override the general ones)"),
     ("Options > Show environment", "List the variables that apply now"),
     ("Options > Python .venv setup", "Create .venv in the project and install requirements.txt (or the project)"),
+    ("Options > Rust toolchain", "Choose the Rust toolchain of this project (stable, nightly, 1.85.0; empty = default); shown in the status line"),
     ("Options > Check before run", "F9 / F5 look for errors first and stop if there are any (remembered)"),
     ("Mouse", "Click a menu, a menu item, a tab or a place in the text; the wheel moves the cursor (start with --no-mouse to select text with the mouse)"),
     ("Ctrl+G", "Go to line number"),

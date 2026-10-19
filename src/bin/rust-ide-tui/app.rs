@@ -72,6 +72,7 @@ pub enum Action {
     ProjectEnv,
     ShowEnv,
     PythonSetup,
+    RustToolchain,
     Run,
     UserScreen,
     Compile,
@@ -118,6 +119,8 @@ pub enum PromptKind {
     SaveAs,
     Find,
     GoTo,
+    /// Options > Rust toolchain: stable, nightly, 1.85.0 ... (empty = default).
+    Toolchain,
     /// Replace, step 1: the text to look for.
     ReplaceFind,
     /// Replace, step 2: what to put instead.
@@ -295,6 +298,7 @@ impl App {
                 item("Project environment...", 'p', "", Action::ProjectEnv),
                 item("Show environment", 's', "", Action::ShowEnv),
                 item("Python .venv setup", 'y', "", Action::PythonSetup),
+                item("Rust toolchain...", 'u', "", Action::RustToolchain),
             ],
             Menu::Window => {
                 let mut items = vec![
@@ -515,6 +519,10 @@ impl App {
                 self.status = "Setting up the Python environment (.venv, requirements) ...".into();
                 return Effect::PythonSetup(self.project_dir());
             }
+            Action::RustToolchain => {
+                let current = rust_ide::env::rust_toolchain(&self.project_dir()).map(|(name, _)| name).unwrap_or_default();
+                self.mode = Mode::Prompt { kind: PromptKind::Toolchain, input: current };
+            }
             Action::ShowEnv => {
                 let text = rust_ide::env::describe(Some(&self.project_dir()));
                 self.new_window();
@@ -617,6 +625,11 @@ impl App {
                 } else {
                     format!("Replaced {count} occurrence(s) (Ctrl+Z undoes)")
                 };
+            }
+            PromptKind::Toolchain => {
+                let name = input.trim();
+                let result = rust_ide::env::set_rust_toolchain(&self.project_dir(), (!name.is_empty()).then_some(name));
+                self.status = result.unwrap_or_else(|e| e);
             }
             PromptKind::GoTo => match input.trim().parse::<usize>() {
                 Ok(line) if line >= 1 => self.buffer_mut().go_to(line - 1, 0),
@@ -794,6 +807,16 @@ impl App {
     }
 
     /// The folder the project environment belongs to: the open file's, else the working folder.
+    /// "Rust nightly " for the status line while a Rust file is open.
+    pub fn toolchain_label(&self) -> String {
+        match self.buffer().path.as_deref() {
+            Some(path) if path.extension().is_some_and(|e| e == "rs") => {
+                format!("{} ", rust_ide::env::toolchain_label(&self.project_dir()))
+            }
+            _ => String::new(),
+        }
+    }
+
     fn project_dir(&self) -> PathBuf {
         self.buffer()
             .path
@@ -1494,5 +1517,32 @@ three");
         assert!(app.buffer().path.is_none());
         assert!(app.buffer().text().contains("# General:"));
         assert!(app.buffer().text().contains("# Project:"));
+    }
+
+    #[test]
+    fn the_rust_toolchain_is_chosen_per_project_and_shown() {
+        let _settings = isolate_settings();
+        let root = std::env::temp_dir().join("rust-ide-tui-toolchain");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let mut app = App::new(&[]);
+        assert!(app.menu_items(Menu::Options).iter().any(|i| i.label == "Rust toolchain..."));
+        app.buffer_mut().path = Some(root.join("main.rs"));
+        assert_eq!(app.toolchain_label(), "Rust default ");
+
+        app.act(Action::RustToolchain);
+        assert!(matches!(&app.mode, Mode::Prompt { kind: PromptKind::Toolchain, input } if input.is_empty()));
+        app.submit(PromptKind::Toolchain, "bad name!");
+        assert!(app.status.contains("not a toolchain name"), "{}", app.status);
+        app.submit(PromptKind::Toolchain, " nightly ");
+        assert_eq!(app.toolchain_label(), "Rust nightly ");
+        assert!(std::fs::read_to_string(root.join(".rust-ide").join("env")).unwrap().contains("RUSTUP_TOOLCHAIN=nightly"));
+        app.act(Action::RustToolchain);
+        assert!(matches!(&app.mode, Mode::Prompt { input, .. } if input == "nightly"), "starts from the current choice");
+        app.submit(PromptKind::Toolchain, "");
+        assert_eq!(app.toolchain_label(), "Rust default ");
+        app.buffer_mut().path = Some(root.join("a.py"));
+        assert_eq!(app.toolchain_label(), "");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

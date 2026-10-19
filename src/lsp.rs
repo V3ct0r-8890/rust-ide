@@ -375,6 +375,8 @@ fn start_server(
     };
 
     let mut command = platform::hidden_command(&program);
+    // The project's environment (e.g. its Rust toolchain) applies to the server too.
+    crate::env::apply(&mut command, root);
     command
         .args(&args)
         .current_dir(root)

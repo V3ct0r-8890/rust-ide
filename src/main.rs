@@ -91,6 +91,7 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Options", "Alt+O O", "Project environment: variables for this project (.rust-ide/env, overrides the general ones)"),
     ("Options", "Alt+O X", "Show environment: the general and project variables that apply now"),
     ("Options", "Alt+O Y", "Python .venv setup: create .venv in the project and install requirements.txt (or the project)"),
+    ("Options", "Alt+O U", "Rust toolchain: choose it for this project (stable, nightly, 1.85.0 ...; empty = default)"),
     ("Options", "Alt+O V", "Vim mode on / off"),
     ("Options", "Alt+O C", "Check the syntax before compile / run on / off"),
     ("Options", "Ctrl+= / Ctrl+- / Ctrl+0", "Editor font larger / smaller / default size (also Alt+O B / S / R)"),
@@ -411,6 +412,7 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
                 item("Project environment...", 'o', "", Message::EditEnv(false)),
                 item("Show environment", 'x', "", Message::ShowEnv),
                 item("Python .venv setup", 'y', "", Message::PythonSetup),
+                item("Rust toolchain...", 'u', "", Message::OpenSearch(SearchMode::Toolchain)),
                 item(if toggles.vim { "Vim mode           [x]" } else { "Vim mode           [ ]" }, 'v', "", Message::ToggleVim),
                 item(
                     if toggles.check_before { "Check before run   [x]" } else { "Check before run   [ ]" },
@@ -659,6 +661,8 @@ enum SearchMode {
     GoTo,
     /// The "Add watch" input (Ctrl+F7).
     Watch,
+    /// The "Rust toolchain" input (Options menu).
+    Toolchain,
 }
 
 struct SearchBar {
@@ -820,6 +824,7 @@ enum Message {
     DebugRun,
     GoToCursor,
     AddWatch,
+    SetToolchain,
     ClearWatches,
     Debug(u64, dap::Event),
 }
@@ -1244,6 +1249,20 @@ impl Ide {
                     self.debug_command(dap::Command::Evaluate { expression });
                 }
                 self.close_search()
+            }
+            Message::SetToolchain => {
+                let name = self.search.as_ref().map(|b| b.query.trim().to_string()).unwrap_or_default();
+                let result = rust_ide::env::set_rust_toolchain(&self.project_dir(), (!name.is_empty()).then_some(name.as_str()));
+                match result {
+                    Ok(message) => {
+                        self.status = message;
+                        self.close_search()
+                    }
+                    Err(e) => {
+                        self.status = e;
+                        Task::none()
+                    }
+                }
             }
             Message::ClearWatches => {
                 self.watches.clear();
@@ -1834,6 +1853,16 @@ impl Ide {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    }
+
+    /// "  Rust nightly" in the status bar while a Rust file is open.
+    fn toolchain_label(&self) -> String {
+        match self.path.as_deref() {
+            Some(path) if path.extension().is_some_and(|e| e == "rs") => {
+                format!("  {}", rust_ide::env::toolchain_label(&self.project_dir()))
+            }
+            _ => String::new(),
+        }
     }
 
     fn open_path(&mut self, path: &Path) -> bool {
@@ -2749,6 +2778,9 @@ impl Ide {
         let query = match mode {
             SearchMode::GoTo => String::new(),
             SearchMode::Watch => selected.unwrap_or_default(),
+            SearchMode::Toolchain => {
+                rust_ide::env::rust_toolchain(&self.project_dir()).map(|(name, _)| name).unwrap_or_default()
+            }
             _ => selected.unwrap_or_else(|| self.last_query.clone()),
         };
         let replacement = self.search.as_ref().map(|b| b.replacement.clone()).unwrap_or_default();
@@ -2872,7 +2904,7 @@ impl Ide {
     /// Re-marks the open bar's matches after the text or query changed.
     fn refresh_search_marks(&mut self) {
         let Some(bar) = &self.search else { return };
-        if matches!(bar.mode, SearchMode::GoTo | SearchMode::Watch) || bar.query.is_empty() {
+        if matches!(bar.mode, SearchMode::GoTo | SearchMode::Watch | SearchMode::Toolchain) || bar.query.is_empty() {
             self.search_marks = Arc::default();
             return;
         }
@@ -2925,6 +2957,18 @@ impl Ide {
                 input(&bar.query, Message::SearchQuery, Message::AddWatch, 300.0).id(SEARCH_INPUT),
                 small_button("Add", Some(Message::AddWatch)),
                 text("an expression, evaluated at each stop").color(TURBO_DARK_GRAY),
+                Space::new().width(Length::Fill),
+                close,
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into(),
+            SearchMode::Toolchain => row![
+                label(" Rust toolchain:"),
+                input(&bar.query, Message::SearchQuery, Message::SetToolchain, 220.0).id(SEARCH_INPUT),
+                small_button("Set", Some(Message::SetToolchain)),
+                text("stable, nightly, 1.85.0 ... (empty = default); saved in the project environment")
+                    .color(TURBO_DARK_GRAY),
                 Space::new().width(Length::Fill),
                 close,
             ]
@@ -3744,6 +3788,7 @@ impl Ide {
             container(text(format!("   {message}")).color(TURBO_RED).wrapping(text::Wrapping::None))
                 .width(Length::Fill)
                 .clip(true),
+            text(self.toolchain_label()).color(TURBO_DARK_GRAY),
             text(format!("  {}  ", truncate(&self.lsp_status, 30))).color(TURBO_DARK_GRAY),
             text(self.vim.as_ref().map(|v| format!("{}  ", v.status())).unwrap_or_default())
                 .color(TURBO_BLUE),
@@ -4905,6 +4950,35 @@ mod language_tests {
         send(&mut ide, [Message::ShowEnv]);
         assert!(ide.path.is_none());
         assert!(ide.content.text().contains("# General:") && ide.content.text().contains("# Project:"));
+    }
+
+    #[test]
+    fn the_rust_toolchain_is_chosen_per_project_and_shown() {
+        let _settings = isolate_settings();
+        let root = std::env::temp_dir().join("rust-ide-gui-toolchain");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        let mut ide = Ide::default();
+        ide.path = Some(root.join("main.rs"));
+        assert!(menu_items(Menu::Options, ide.toggles(), &[], 0).iter().any(|i| i.label == "Rust toolchain..."));
+        assert_eq!(ide.toolchain_label(), "  Rust default");
+
+        send(&mut ide, [Message::OpenSearch(SearchMode::Toolchain)]);
+        send(&mut ide, [Message::SearchQuery("bad name!".into()), Message::SetToolchain]);
+        assert!(ide.status.contains("not a toolchain name") && ide.search.is_some(), "{}", ide.status);
+        send(&mut ide, [Message::SearchQuery("nightly".into()), Message::SetToolchain]);
+        assert!(ide.search.is_none(), "the bar closes once it is set");
+        assert_eq!(ide.toolchain_label(), "  Rust nightly");
+        assert!(std::fs::read_to_string(root.join(".rust-ide").join("env")).unwrap().contains("RUSTUP_TOOLCHAIN=nightly"));
+
+        send(&mut ide, [Message::OpenSearch(SearchMode::Toolchain)]);
+        assert_eq!(ide.search.as_ref().map(|b| b.query.as_str()), Some("nightly"), "starts from the current choice");
+        send(&mut ide, [Message::SearchQuery(String::new()), Message::SetToolchain]);
+        assert_eq!(ide.toolchain_label(), "  Rust default");
+        ide.path = Some(root.join("notes.py"));
+        assert_eq!(ide.toolchain_label(), "", "only Rust files show it");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
