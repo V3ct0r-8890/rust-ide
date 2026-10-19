@@ -24,13 +24,37 @@ use highlight::{Lang, Mark, MarkKind};
 use platform::Os;
 use runner::{BuildResult, Diagnostic, RunTarget};
 
-const TURBO_BLUE: Color = Color::from_rgb(0.0, 0.0, 0.66);
-const TURBO_CYAN: Color = Color::from_rgb(0.0, 0.66, 0.66);
-const TURBO_GRAY: Color = Color::from_rgb(0.75, 0.75, 0.75);
-const TURBO_DARK_GRAY: Color = Color::from_rgb(0.33, 0.33, 0.33);
-const TURBO_GREEN: Color = Color::from_rgb(0.0, 0.66, 0.0);
-const TURBO_YELLOW: Color = Color::from_rgb(1.0, 1.0, 0.33);
-const TURBO_RED: Color = Color::from_rgb(0.66, 0.0, 0.0);
+/// The palette: Turbo Pascal colors, or grays with the monochrome theme (Options > Mono theme).
+fn palette(turbo: (f32, f32, f32), mono: f32) -> Color {
+    if platform::mono() { Color::from_rgb(mono, mono, mono) } else { Color::from_rgb(turbo.0, turbo.1, turbo.2) }
+}
+
+/// Editor and title background.
+fn turbo_blue() -> Color {
+    palette((0.0, 0.0, 0.66), 0.0)
+}
+/// Selected rows, the Messages panel.
+fn turbo_cyan() -> Color {
+    palette((0.0, 0.66, 0.66), 0.90)
+}
+/// Menus, dialogs, the status bar.
+fn turbo_gray() -> Color {
+    palette((0.75, 0.75, 0.75), 0.62)
+}
+fn turbo_dark_gray() -> Color {
+    palette((0.33, 0.33, 0.33), 0.22)
+}
+/// Buttons and the chosen row.
+fn turbo_green() -> Color {
+    palette((0.0, 0.66, 0.0), 0.45)
+}
+/// Editor text and the block cursor.
+fn turbo_yellow() -> Color {
+    palette((1.0, 1.0, 0.33), 1.0)
+}
+fn turbo_red() -> Color {
+    palette((0.66, 0.0, 0.0), 1.0)
+}
 const SCREEN_TEXT: Color = Color::from_rgb(0.75, 0.75, 0.75);
 
 const MENU_TITLES: [&str; 10] = [
@@ -38,7 +62,12 @@ const MENU_TITLES: [&str; 10] = [
 ];
 const MENU_TITLE_WIDTH: f32 = 84.0;
 const MENU_BAR_HEIGHT: f32 = 26.0;
-const STATUS_BAR_HEIGHT: f32 = 24.0;
+static TWO_LINE_STATUS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The status bar: one line, or two lines of smaller text.
+fn status_bar_height() -> f32 {
+    if TWO_LINE_STATUS.load(std::sync::atomic::Ordering::Relaxed) { 40.0 } else { 24.0 }
+}
 const MESSAGES_HEIGHT: f32 = 140.0;
 const COMPLETION_ROWS: usize = 10;
 const OUTPUT_INPUT: &str = "output-input";
@@ -94,6 +123,8 @@ const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("Tools", "Alt+T V", "Python .venv setup: create .venv in the project and install requirements.txt (or the project)"),
     ("Tools", "Alt+T R", "Rust toolchain: pick one of the installed toolchains for this project (Up/Down, Enter, O other name)"),
     ("Options", "Alt+O V", "Vim mode on / off"),
+    ("Options", "Alt+O T", "Mono theme on / off: black, white and grays instead of the Turbo Pascal colors"),
+    ("Options", "Alt+O W", "Two-line status bar on / off: message and position on top, keys below, in smaller text"),
     ("Options", "Alt+O C", "Check the syntax before compile / run on / off"),
     ("Options", "Ctrl+= / Ctrl+- / Ctrl+0", "Editor font larger / smaller / default size (also Alt+O L / M / D)"),
     ("Window", "Alt+W L / H / T", "Window style: legacy windows / horizontal tabs / vertical tabs"),
@@ -356,6 +387,8 @@ struct Toggles {
     vim: bool,
     check_before: bool,
     line_numbers: bool,
+    mono: bool,
+    two_line_status: bool,
     window_style: WindowStyle,
     preview: bool,
     preview_mode: PreviewMode,
@@ -427,6 +460,8 @@ fn menu_items(menu: Menu, toggles: Toggles, windows: &[String], active: usize) -
                 item(on(toggles.vim, "Vim mode"), 'v', "", Message::ToggleVim),
                 item(on(toggles.check_before, "Check before run"), 'c', "", Message::ToggleCheckBefore),
                 item(on(toggles.line_numbers, "Line numbers"), 'n', "", Message::ToggleLineNumbers),
+                item(on(toggles.mono, "Mono theme"), 't', "", Message::ToggleMono),
+                item(on(toggles.two_line_status, "Two-line status"), 'w', "", Message::ToggleStatusLines),
                 item("Font larger", 'l', "Ctrl+=", Message::FontLarger),
                 item("Font smaller", 'm', "Ctrl+-", Message::FontSmaller),
                 item("Font default", 'd', "Ctrl+0", Message::FontDefault),
@@ -610,6 +645,8 @@ struct Ide {
     check_before: bool,
     /// Line numbers in a column left of the editor.
     line_numbers: bool,
+    /// Status bar on two lines with smaller text (Options > Two-line status).
+    two_line_status: bool,
     /// Type (extension) chosen for the active window while it has no file name.
     untitled_ext: Option<&'static str>,
     language: Option<LanguageDialog>,
@@ -696,7 +733,7 @@ struct SettingsDialog {
 }
 
 /// Rows of the settings dialog (the last one closes it).
-const SETTINGS_ROWS: usize = 8;
+const SETTINGS_ROWS: usize = 10;
 
 /// File > New project...: language, size, name and folder of a template project.
 struct ProjectDialog {
@@ -799,6 +836,8 @@ enum Message {
     ToggleVim,
     ToggleCheckBefore,
     ToggleLineNumbers,
+    ToggleMono,
+    ToggleStatusLines,
     SyntaxCheck,
     NewFileType(usize),
     WindowStyle(WindowStyle),
@@ -862,6 +901,8 @@ impl Ide {
         ide.os = Some(os);
         ide.check_before = platform::read_setting("check_before").as_deref() == Some("true");
         ide.line_numbers = platform::read_setting("line_numbers").as_deref() == Some("true");
+        platform::set_mono(platform::read_setting("theme").as_deref() == Some("mono"));
+        ide.set_status_lines(platform::read_setting("status_lines").as_deref() == Some("2"));
         ide.window_style = WindowStyle::from_setting(platform::read_setting("window_style").as_deref());
         ide.font_points = platform::read_setting("font_size")
             .and_then(|v| v.trim().parse::<i16>().ok())
@@ -961,6 +1002,8 @@ impl Ide {
             vim: self.vim.is_some(),
             check_before: self.check_before,
             line_numbers: self.line_numbers,
+            mono: platform::mono(),
+            two_line_status: self.two_line_status,
             window_style: self.window_style,
             preview: self.preview_shown(),
             preview_mode: self.preview_mode,
@@ -1393,6 +1436,18 @@ impl Ide {
                 self.status = format!("Check before compile/run {}", if on { "on" } else { "off" });
                 self.save_setting("check_before", if on { "true" } else { "false" });
                 Task::none()
+            }
+            Message::ToggleMono => {
+                platform::set_mono(!platform::mono());
+                self.status = format!("Mono theme {}", if platform::mono() { "on" } else { "off" });
+                self.save_setting("theme", if platform::mono() { "mono" } else { "turbo" });
+                Task::none()
+            }
+            Message::ToggleStatusLines => {
+                self.set_status_lines(!self.two_line_status);
+                self.status = format!("Status bar on {} line(s)", if self.two_line_status { 2 } else { 1 });
+                self.save_setting("status_lines", if self.two_line_status { "2" } else { "1" });
+                iced::widget::operation::focus(EDITOR)
             }
             Message::ToggleLineNumbers => {
                 self.line_numbers = !self.line_numbers;
@@ -2294,12 +2349,12 @@ impl Ide {
     fn window_tabs(&self) -> Element<'_, Message> {
         let tabs = self.window_names().into_iter().enumerate().map(|(index, name)| {
             let active = index == self.active;
-            button(text(format!(" {} {name} ", index + 1)).color(if active { Color::BLACK } else { TURBO_DARK_GRAY }))
+            button(text(format!(" {} {name} ", index + 1)).color(if active { Color::BLACK } else { turbo_dark_gray() }))
                 .padding([1, 4])
                 .on_press(Message::SelectWindow(index))
                 .style(move |_, status| button::Style {
                     background: Some(Background::Color(
-                        if active || matches!(status, button::Status::Hovered) { TURBO_CYAN } else { TURBO_GRAY },
+                        if active || matches!(status, button::Status::Hovered) { turbo_cyan() } else { turbo_gray() },
                     )),
                     ..button::Style::default()
                 })
@@ -2308,7 +2363,7 @@ impl Ide {
         container(row(tabs).spacing(2))
             .width(Length::Fill)
             .padding([1, 4])
-            .style(|_| container::Style::default().background(TURBO_GRAY))
+            .style(|_| container::Style::default().background(turbo_gray()))
             .into()
     }
 
@@ -2483,7 +2538,7 @@ impl Ide {
             NavKey::Right => return self.settings_act(row, 1),
             NavKey::Enter | NavKey::Char(' ') => return self.settings_act(row, 0),
             NavKey::Char(c) => {
-                if let Some(index) = ['p', 'w', 'v', 'c', 'n', 'f', 'd'].iter().position(|&k| k == c) {
+                if let Some(index) = ['p', 'w', 'v', 'c', 'n', 'f', 'm', 's', 'd'].iter().position(|&k| k == c) {
                     dialog.selected = index;
                     return self.settings_act(index, 0);
                 }
@@ -2539,7 +2594,9 @@ impl Ide {
             3 => self.update(Message::ToggleCheckBefore),
             4 => self.update(Message::ToggleLineNumbers),
             5 => self.update(if dir < 0 { Message::FontSmaller } else { Message::FontLarger }),
-            6 => {
+            6 => self.update(Message::ToggleMono),
+            7 => self.update(Message::ToggleStatusLines),
+            8 => {
                 self.settings = None;
                 self.update(Message::ShowDeps)
             }
@@ -2559,6 +2616,8 @@ impl Ide {
             ("Check before run", 'c', on(self.check_before)),
             ("Line numbers", 'n', on(self.line_numbers)),
             ("Font size", 'f', format!("< {} >", self.font_size())),
+            ("Mono theme", 'm', on(platform::mono())),
+            ("Two-line status", 's', on(self.two_line_status)),
             ("Dependencies...", 'd', String::new()),
             ("Close", '\0', "Esc".to_string()),
         ];
@@ -2574,7 +2633,7 @@ impl Ide {
             .on_press(Message::SettingsAct(index, if index == 5 { 1 } else { 0 }))
             .style(move |_, status| button::Style {
                 background: Some(Background::Color(
-                    if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
+                    if chosen || matches!(status, button::Status::Hovered) { turbo_green() } else { turbo_gray() },
                 )),
                 ..button::Style::default()
             })
@@ -2584,15 +2643,15 @@ impl Ide {
             container(text(" Settings ").color(Color::WHITE))
                 .width(Length::Fill)
                 .padding(2)
-                .style(|_| container::Style::default().background(TURBO_BLUE)),
+                .style(|_| container::Style::default().background(turbo_blue())),
             column(entries).padding(8),
-            container(text(" Up/Down  Left/Right or Enter changes  P W V C F D  Esc closes").color(Color::BLACK).size(13))
+            container(text(" Up/Down  Left/Right or Enter changes  P W V C N F M S D  Esc closes").color(Color::BLACK).size(13))
                 .padding(10),
         ];
         opaque(
             container(container(body).width(560).style(|_| container::Style {
                 border: iced::Border::default().color(Color::BLACK).width(1),
-                ..container::Style::default().background(TURBO_GRAY)
+                ..container::Style::default().background(turbo_gray())
             }))
             .center(Length::Fill),
         )
@@ -2715,14 +2774,14 @@ impl Ide {
     /// The rendered Markdown, on a light page, in its own scrolling pane.
     fn preview_pane(&self) -> Element<'_, Message> {
         let mut style = markdown::Style::from(&Theme::Dark);
-        style.link_color = TURBO_BLUE;
+        style.link_color = turbo_blue();
         let settings = markdown::Settings::with_text_size(self.font_size() as u32, style);
         let page = markdown::view(self.preview_content.items(), settings).map(Message::PreviewLink);
         container(scrollable(container(page).padding(12)).id(PREVIEW_SCROLL).width(Length::Fill).height(Length::Fill))
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_| container::Style {
-                background: Some(Background::Color(TURBO_GRAY)),
+                background: Some(Background::Color(turbo_gray())),
                 text_color: Some(Color::BLACK),
                 border: iced::Border::default().color(Color::BLACK).width(1),
                 ..container::Style::default()
@@ -2736,14 +2795,14 @@ impl Ide {
             let active = index == self.active;
             button(
                 text(truncate(&format!("{} {name}", index + 1), 22))
-                    .color(if active { Color::BLACK } else { TURBO_DARK_GRAY }),
+                    .color(if active { Color::BLACK } else { turbo_dark_gray() }),
             )
             .width(Length::Fill)
             .padding([2, 6])
             .on_press(Message::SelectWindow(index))
             .style(move |_, status| button::Style {
                 background: Some(Background::Color(
-                    if active || matches!(status, button::Status::Hovered) { TURBO_CYAN } else { TURBO_GRAY },
+                    if active || matches!(status, button::Status::Hovered) { turbo_cyan() } else { turbo_gray() },
                 )),
                 ..button::Style::default()
             })
@@ -2752,7 +2811,7 @@ impl Ide {
         container(scrollable(column(rows)))
             .width(236)
             .height(Length::Fill)
-            .style(|_| container::Style::default().background(TURBO_GRAY))
+            .style(|_| container::Style::default().background(turbo_gray()))
             .into()
     }
 
@@ -2772,7 +2831,7 @@ impl Ide {
             .align_y(iced::Alignment::Center),
         )
         .width(Length::Fill)
-        .style(|_| container::Style::default().background(TURBO_BLUE))
+        .style(|_| container::Style::default().background(turbo_blue()))
         .into()
     }
 
@@ -2780,7 +2839,7 @@ impl Ide {
     fn debug_panel(&self) -> Element<'_, Message> {
         let header = |title: &str| text(format!(" {title}")).color(Color::WHITE);
         let line = |left: String, right: String| {
-            row![text(left).color(Color::BLACK).width(Length::FillPortion(2)), text(right).color(TURBO_BLUE).width(Length::FillPortion(3))]
+            row![text(left).color(Color::BLACK).width(Length::FillPortion(2)), text(right).color(turbo_blue()).width(Length::FillPortion(3))]
                 .spacing(6)
         };
         let watches = column(
@@ -2810,7 +2869,7 @@ impl Ide {
                         .collect::<Vec<Element<'_, Message>>>(),
                 ),
             ),
-            None => (column![text(" (not running)").color(TURBO_DARK_GRAY)], column![]),
+            None => (column![text(" (not running)").color(turbo_dark_gray())], column![]),
         };
         let section = |title: &str, body: iced::widget::Column<'static, Message>| {
             column![header(title), scrollable(body.padding([0, 6])).height(Length::Fill)].width(Length::Fill)
@@ -2825,7 +2884,7 @@ impl Ide {
         )
         .height(MESSAGES_HEIGHT)
         .width(Length::Fill)
-        .style(|_| container::Style::default().background(TURBO_CYAN))
+        .style(|_| container::Style::default().background(turbo_cyan()))
         .into()
     }
 
@@ -3212,7 +3271,7 @@ impl Ide {
                 label(" Add watch:"),
                 input(&bar.query, Message::SearchQuery, Message::AddWatch, 300.0).id(SEARCH_INPUT),
                 small_button("Add", Some(Message::AddWatch)),
-                text("an expression, evaluated at each stop").color(TURBO_DARK_GRAY),
+                text("an expression, evaluated at each stop").color(turbo_dark_gray()),
                 Space::new().width(Length::Fill),
                 close,
             ]
@@ -3224,7 +3283,7 @@ impl Ide {
                 input(&bar.query, Message::SearchQuery, Message::SetToolchain, 220.0).id(SEARCH_INPUT),
                 small_button("Set", Some(Message::SetToolchain)),
                 text("stable, nightly, 1.85.0 ... (empty = default); saved in the project environment")
-                    .color(TURBO_DARK_GRAY),
+                    .color(turbo_dark_gray()),
                 Space::new().width(Length::Fill),
                 close,
             ]
@@ -3235,7 +3294,7 @@ impl Ide {
                 label(" Go to line:"),
                 input(&bar.query, Message::SearchQuery, Message::GoToLine, 100.0).id(SEARCH_INPUT),
                 small_button("Go", Some(Message::GoToLine)),
-                text(format!("(1-{})", self.content.line_count())).color(TURBO_DARK_GRAY),
+                text(format!("(1-{})", self.content.line_count())).color(turbo_dark_gray()),
                 Space::new().width(Length::Fill),
                 close,
             ]
@@ -3281,7 +3340,7 @@ impl Ide {
             .width(Length::Fill)
             .style(|_| container::Style {
                 border: iced::Border::default().color(Color::BLACK).width(1),
-                ..container::Style::default().background(TURBO_GRAY)
+                ..container::Style::default().background(turbo_gray())
             })
             .into()
     }
@@ -3663,7 +3722,7 @@ impl Ide {
                 .into()
         })))
         .width(Length::Fill)
-        .style(|_| container::Style::default().background(TURBO_GRAY));
+        .style(|_| container::Style::default().background(turbo_gray()));
 
         let popup_open = self.completion.is_some();
         // While a menu, dialog or the help screen is open, keys drive it, not the text.
@@ -3713,17 +3772,17 @@ impl Ide {
                 Binding::from_key_press(press)
             })
             .style(|theme, status| text_editor::Style {
-                background: Background::Color(TURBO_BLUE),
-                value: TURBO_YELLOW,
+                background: Background::Color(turbo_blue()),
+                value: turbo_yellow(),
                 ..text_editor::default(theme, status)
             });
 
         let gutter = self.line_numbers.then_some(cursor::Gutter {
-            background: Color::from_rgb(0.0, 0.0, 0.5),
-            number: TURBO_CYAN,
-            current: TURBO_YELLOW,
+            background: if platform::mono() { Color::from_rgb(0.12, 0.12, 0.12) } else { Color::from_rgb(0.0, 0.0, 0.5) },
+            number: turbo_cyan(),
+            current: turbo_yellow(),
         });
-        let editor = cursor::BlockCursor::new(editor, &self.content, TURBO_YELLOW, TURBO_BLUE, self.font_size() as f32)
+        let editor = cursor::BlockCursor::new(editor, &self.content, turbo_yellow(), turbo_blue(), self.font_size() as f32)
             .line_numbers(gutter);
 
         let panel = self.panel_items();
@@ -3757,7 +3816,7 @@ impl Ide {
 
         let mut layers = stack![layout];
         if let Some(popup) = self.completion_popup() {
-            let bottom = STATUS_BAR_HEIGHT
+            let bottom = status_bar_height()
                 + if self.panel_items().is_empty() { 0.0 } else { MESSAGES_HEIGHT };
             layers = layers.push(
                 container(popup)
@@ -3809,7 +3868,7 @@ impl Ide {
             small_button("Hide", Some(Message::OutputToggle)),
         ])
         .width(Length::Fill)
-        .style(|_| container::Style::default().background(TURBO_GRAY));
+        .style(|_| container::Style::default().background(turbo_gray()));
 
         let screen = scrollable(
             text(&self.output.screen).color(SCREEN_TEXT).font(Font::MONOSPACE).size(self.font_size() as f32).width(Length::Fill),
@@ -3832,17 +3891,17 @@ impl Ide {
             container(screen).padding([4, 8]).height(Length::Fill),
             input,
             container(footer).width(Length::Fill).style(|_| {
-                container::Style::default().background(TURBO_GRAY)
+                container::Style::default().background(turbo_gray())
             }),
         ])
         .style(|_| container::Style {
-            border: iced::Border::default().color(TURBO_GRAY).width(2),
+            border: iced::Border::default().color(turbo_gray()).width(2),
             ..container::Style::default().background(Color::BLACK)
         });
 
         opaque(
             container(window)
-                .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(STATUS_BAR_HEIGHT + 8.0).left(24.0).right(24.0))
+                .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(status_bar_height() + 8.0).left(24.0).right(24.0))
                 .width(Length::Fill)
                 .height(Length::Fill),
         )
@@ -3852,9 +3911,9 @@ impl Ide {
         let busy = dialog.checking || dialog.installing.is_some();
         let rows = dialog.list.iter().enumerate().map(|(index, dep)| {
             let (mark, color) = match (&dep.found, dep.need) {
-                (Some(_), _) => ("[ OK ]", TURBO_GREEN),
-                (None, deps::Need::Optional) => ("[ -- ]", TURBO_DARK_GRAY),
-                (None, _) => ("[MISS]", TURBO_RED),
+                (Some(_), _) => ("[ OK ]", if platform::mono() { Color::BLACK } else { turbo_green() }),
+                (None, deps::Need::Optional) => ("[ -- ]", turbo_dark_gray()),
+                (None, _) => ("[MISS]", turbo_red()),
             };
             let need = match dep.need {
                 deps::Need::Required => "required",
@@ -3862,9 +3921,9 @@ impl Ide {
                 deps::Need::Optional => "optional",
             };
             let detail: Element<'a, Message> = match &dep.found {
-                Some(found) => text(truncate(found, 52)).color(TURBO_DARK_GRAY).into(),
+                Some(found) => text(truncate(found, 52)).color(turbo_dark_gray()).into(),
                 None => row![
-                    text(&dep.install).color(TURBO_BLUE).width(Length::Fill),
+                    text(&dep.install).color(turbo_blue()).width(Length::Fill),
                     small_button(
                         "Install",
                         dep.auto.as_ref().filter(|_| !busy).map(|_| Message::DepInstall(index)),
@@ -3880,7 +3939,7 @@ impl Ide {
                     text(mark).color(color).width(64),
                     column![
                         text(dep.name).color(Color::BLACK),
-                        text(format!("{} ({need})", dep.purpose)).color(TURBO_DARK_GRAY).size(12),
+                        text(format!("{} ({need})", dep.purpose)).color(turbo_dark_gray()).size(12),
                     ]
                     .width(300),
                     detail,
@@ -3890,7 +3949,7 @@ impl Ide {
             .padding([2, 4])
             .style(move |_| {
                 if selected {
-                    container::Style::default().background(TURBO_CYAN)
+                    container::Style::default().background(turbo_cyan())
                 } else {
                     container::Style::default()
                 }
@@ -3917,7 +3976,7 @@ impl Ide {
             .padding(2)
             .style(move |_| {
                 if focus == Some(0) {
-                    container::Style::default().background(TURBO_CYAN)
+                    container::Style::default().background(turbo_cyan())
                 } else {
                     container::Style::default()
                 }
@@ -3931,7 +3990,7 @@ impl Ide {
 
         let body = column![
             container(header).width(Length::Fill).padding(2).style(|_| {
-                container::Style::default().background(TURBO_BLUE)
+                container::Style::default().background(turbo_blue())
             }),
             scrollable(column(rows).spacing(6).padding(Padding::default().top(10).bottom(10).left(10).right(24)))
                 .direction(scrollable::Direction::Vertical(
@@ -3939,10 +3998,10 @@ impl Ide {
                 ))
                 .id(DEPS_SCROLL)
                 .height(Length::Fill),
-            container(text(message).color(TURBO_RED)).padding([0, 10]),
+            container(text(message).color(turbo_red())).padding([0, 10]),
             container(
                 text(" Up/Down/Tab select   I install   C copy   G guide   R re-check   S startup check   Esc close")
-                    .color(TURBO_DARK_GRAY),
+                    .color(turbo_dark_gray()),
             )
             .padding([4, 10]),
             container(buttons).padding(10),
@@ -3953,10 +4012,10 @@ impl Ide {
             container(
                 container(body).width(900).max_height(540).style(|_| container::Style {
                     border: iced::Border::default().color(Color::BLACK).width(1),
-                    ..container::Style::default().background(TURBO_GRAY)
+                    ..container::Style::default().background(turbo_gray())
                 }),
             )
-            .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(STATUS_BAR_HEIGHT + 8.0))
+            .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(status_bar_height() + 8.0))
             .center(Length::Fill),
         )
     }
@@ -3980,17 +4039,17 @@ impl Ide {
                 let selected = index == completion.selected;
                 let detail: String = item.detail.chars().take(40).collect();
                 button(row![
-                    text(format!("{:<8}", item.kind)).color(TURBO_DARK_GRAY),
+                    text(format!("{:<8}", item.kind)).color(turbo_dark_gray()),
                     text(&item.label).color(Color::BLACK),
                     Space::new().width(Length::Fill),
-                    text(detail).color(TURBO_DARK_GRAY),
+                    text(detail).color(turbo_dark_gray()),
                 ])
                 .width(Length::Fill)
                 .padding([1, 6])
                 .on_press(Message::CompletionPick(index))
                 .style(move |_, status| button::Style {
                     background: (selected || matches!(status, button::Status::Hovered))
-                        .then(|| Background::Color(TURBO_GREEN)),
+                        .then(|| Background::Color(turbo_green())),
                     ..button::Style::default()
                 })
                 .into()
@@ -4020,7 +4079,7 @@ impl Ide {
                 ),
                 _ => String::new(),
             };
-            let color = if d.level == "error" { TURBO_RED } else { Color::BLACK };
+            let color = if d.level == "error" { turbo_red() } else { Color::BLACK };
             let chosen = self.message_index == Some(index);
             button(text(format!("{} {location}{}", d.level.to_uppercase(), d.message)).color(color))
                 .width(Length::Fill)
@@ -4028,7 +4087,7 @@ impl Ide {
                 .on_press(Message::JumpTo(index))
                 .style(move |_, status| button::Style {
                     background: (chosen || matches!(status, button::Status::Hovered))
-                        .then(|| Background::Color(TURBO_GREEN)),
+                        .then(|| Background::Color(turbo_green())),
                     text_color: Color::BLACK,
                     ..button::Style::default()
                 })
@@ -4041,7 +4100,7 @@ impl Ide {
         ])
         .height(MESSAGES_HEIGHT)
         .width(Length::Fill)
-        .style(|_| container::Style::default().background(TURBO_CYAN))
+        .style(|_| container::Style::default().background(turbo_cyan()))
         .into()
     }
 
@@ -4054,6 +4113,11 @@ impl Ide {
             .unwrap_or(position.column)
     }
 
+    fn set_status_lines(&mut self, two: bool) {
+        self.two_line_status = two;
+        TWO_LINE_STATUS.store(two, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn status_bar(&self) -> Element<'_, Message> {
         let cursor = self.content.cursor().position;
         let keys = " F2 Save  F3 Open  F5 Run  Alt+F5 Output  F9 Compile";
@@ -4063,23 +4127,46 @@ impl Ide {
             .iter()
             .find(|d| d.line == cursor.line)
             .map_or(self.status.as_str(), |d| d.message.as_str());
+        if self.two_line_status {
+            // Line 1: what is happening. Line 2: the keys, in smaller text.
+            let size = 12;
+            let top = row![
+                container(text(format!(" {message}")).size(size).color(turbo_red()).wrapping(text::Wrapping::None))
+                    .width(Length::Fill)
+                    .clip(true),
+                text(self.toolchain_label()).size(size).color(turbo_dark_gray()),
+                text(format!("  {}  ", truncate(&self.lsp_status, 30))).size(size).color(turbo_dark_gray()),
+                text(self.vim.as_ref().map(|v| format!("{}  ", v.status())).unwrap_or_default())
+                    .size(size)
+                    .color(turbo_dark_gray()),
+                text(format!("{}:{} ", cursor.line + 1, self.cursor_char_column() + 1)).size(size).color(Color::BLACK),
+            ];
+            let keys = " F1 Help  F2 Save  F3 Open  F4 Go to cursor  F5 Run  F7 Trace  F8 Step  F9 Compile  Alt+F9 Check  Ctrl+F8 Breakpoint  F10 Menu";
+            return container(column![top, text(keys).size(size).color(Color::BLACK).wrapping(text::Wrapping::None)])
+                .padding([2, 4])
+                .height(status_bar_height())
+                .width(Length::Fill)
+                .clip(true)
+                .style(|_| container::Style::default().background(turbo_gray()))
+                .into();
+        }
         container(row![
             text(keys).color(Color::BLACK),
             // The message takes the remaining space and is clipped, so the
             // server status and cursor position always stay visible.
-            container(text(format!("   {message}")).color(TURBO_RED).wrapping(text::Wrapping::None))
+            container(text(format!("   {message}")).color(turbo_red()).wrapping(text::Wrapping::None))
                 .width(Length::Fill)
                 .clip(true),
-            text(self.toolchain_label()).color(TURBO_DARK_GRAY),
-            text(format!("  {}  ", truncate(&self.lsp_status, 30))).color(TURBO_DARK_GRAY),
+            text(self.toolchain_label()).color(turbo_dark_gray()),
+            text(format!("  {}  ", truncate(&self.lsp_status, 30))).color(turbo_dark_gray()),
             text(self.vim.as_ref().map(|v| format!("{}  ", v.status())).unwrap_or_default())
-                .color(TURBO_BLUE),
+                .color(turbo_blue()),
             text(format!("{}:{} ", cursor.line + 1, self.cursor_char_column() + 1)).color(Color::BLACK),
         ])
         .padding([2, 4])
-        .height(STATUS_BAR_HEIGHT)
+        .height(status_bar_height())
         .width(Length::Fill)
-        .style(|_| container::Style::default().background(TURBO_GRAY))
+        .style(|_| container::Style::default().background(turbo_gray()))
         .into()
     }
 }
@@ -4187,7 +4274,7 @@ fn popup_frame(content: Element<'_, Message>) -> Element<'_, Message> {
         .padding(2)
         .style(|_| container::Style {
             border: iced::Border::default().color(Color::BLACK).width(1),
-            ..container::Style::default().background(TURBO_CYAN)
+            ..container::Style::default().background(turbo_cyan())
         })
         .into()
 }
@@ -4277,7 +4364,7 @@ fn project_dialog(dialog: &ProjectDialog) -> Element<'static, Message> {
         .on_press(Message::ProjectAct(row, 1))
         .style(move |_, status| button::Style {
             background: Some(Background::Color(
-                if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
+                if chosen || matches!(status, button::Status::Hovered) { turbo_green() } else { turbo_gray() },
             )),
             ..button::Style::default()
         })
@@ -4298,7 +4385,7 @@ fn project_dialog(dialog: &ProjectDialog) -> Element<'static, Message> {
         )
         .padding([3, 10])
         .width(Length::Fill)
-        .style(move |_| container::Style::default().background(if chosen { TURBO_GREEN } else { TURBO_GRAY }))
+        .style(move |_| container::Style::default().background(if chosen { turbo_green() } else { turbo_gray() }))
     };
     let action = |row: usize, label: &str, hotkey: char| {
         let chosen = dialog.row == row;
@@ -4308,7 +4395,7 @@ fn project_dialog(dialog: &ProjectDialog) -> Element<'static, Message> {
             .on_press(Message::ProjectAct(row, 0))
             .style(move |_, status| button::Style {
                 background: Some(Background::Color(
-                    if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
+                    if chosen || matches!(status, button::Status::Hovered) { turbo_green() } else { turbo_gray() },
                 )),
                 ..button::Style::default()
             })
@@ -4323,7 +4410,7 @@ fn project_dialog(dialog: &ProjectDialog) -> Element<'static, Message> {
         container(text(" New project ").color(Color::WHITE))
             .width(Length::Fill)
             .padding(2)
-            .style(|_| container::Style::default().background(TURBO_BLUE)),
+            .style(|_| container::Style::default().background(turbo_blue())),
         column![
             choice(PROJECT_LANG, "Language", 'l', dialog.lang.label().to_string()),
             choice(PROJECT_SIZE, "Size", 's', dialog.size.label().to_string()),
@@ -4333,16 +4420,16 @@ fn project_dialog(dialog: &ProjectDialog) -> Element<'static, Message> {
             action(PROJECT_CREATE + 1, "Cancel", '\0'),
         ]
         .padding(8),
-        container(text(dialog.size.describe(dialog.lang)).color(TURBO_DARK_GRAY).size(13)).padding([0, 10]),
-        container(text(format!("Creates {}", target.display())).color(TURBO_DARK_GRAY).size(13)).padding([0, 10]),
-        container(text(problem).color(TURBO_RED).size(13)).padding([2, 10]),
+        container(text(dialog.size.describe(dialog.lang)).color(turbo_dark_gray()).size(13)).padding([0, 10]),
+        container(text(format!("Creates {}", target.display())).color(turbo_dark_gray()).size(13)).padding([0, 10]),
+        container(text(problem).color(turbo_red()).size(13)).padding([2, 10]),
         container(text(" Tab/Up/Down field  Left/Right or letters change  Enter Create  Esc cancels").color(Color::BLACK).size(13))
             .padding(10),
     ];
     opaque(
         container(container(body).width(620).style(|_| container::Style {
             border: iced::Border::default().color(Color::BLACK).width(1),
-            ..container::Style::default().background(TURBO_GRAY)
+            ..container::Style::default().background(turbo_gray())
         }))
         .center(Length::Fill),
     )
@@ -4361,7 +4448,7 @@ fn language_dialog(dialog: &LanguageDialog) -> Element<'static, Message> {
         .on_press(Message::NewFileType(index))
         .style(move |_, status| button::Style {
             background: Some(Background::Color(
-                if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
+                if chosen || matches!(status, button::Status::Hovered) { turbo_green() } else { turbo_gray() },
             )),
             ..button::Style::default()
         })
@@ -4376,15 +4463,15 @@ fn language_dialog(dialog: &LanguageDialog) -> Element<'static, Message> {
         container(text(title).color(Color::WHITE))
             .width(Length::Fill)
             .padding(2)
-            .style(|_| container::Style::default().background(TURBO_BLUE)),
+            .style(|_| container::Style::default().background(turbo_blue())),
         column(rows).padding(8),
-        container(text(filetype::NOTE).color(TURBO_DARK_GRAY).size(12)).padding([0, 10]),
+        container(text(filetype::NOTE).color(turbo_dark_gray()).size(12)).padding([0, 10]),
         container(text(format!(" Up/Down  Enter OK  R P T M or 1-4  {escape}")).color(Color::BLACK)).padding(10),
     ];
     opaque(
         container(container(body).width(520).style(|_| container::Style {
             border: iced::Border::default().color(Color::BLACK).width(1),
-            ..container::Style::default().background(TURBO_GRAY)
+            ..container::Style::default().background(turbo_gray())
         }))
         .center(Length::Fill),
     )
@@ -4396,7 +4483,7 @@ fn dropdown(menu: Menu, toggles: Toggles, selected: usize, windows: &[String], a
         let label: Element<'static, Message> = if enabled {
             hotkey_label(&item.label, item.hotkey)
         } else {
-            text(item.label).color(TURBO_DARK_GRAY).into()
+            text(item.label).color(turbo_dark_gray()).into()
         };
         let chosen = index == selected && enabled;
         button(row![label, Space::new().width(Length::Fill), text(item.keys).color(Color::BLACK)])
@@ -4406,9 +4493,9 @@ fn dropdown(menu: Menu, toggles: Toggles, selected: usize, windows: &[String], a
             .style(move |_, status| button::Style {
                 background: Some(Background::Color(
                     if chosen || (enabled && matches!(status, button::Status::Hovered)) {
-                        TURBO_GREEN
+                        turbo_green()
                     } else {
-                        TURBO_GRAY
+                        turbo_gray()
                     },
                 )),
                 ..button::Style::default()
@@ -4418,7 +4505,7 @@ fn dropdown(menu: Menu, toggles: Toggles, selected: usize, windows: &[String], a
 
     container(container(column(entries)).style(|_| container::Style {
         border: iced::Border::default().color(Color::BLACK).width(1),
-        ..container::Style::default().background(TURBO_GRAY)
+        ..container::Style::default().background(turbo_gray())
     }))
     .padding(Padding::default().top(MENU_BAR_HEIGHT).left(menu.index() as f32 * MENU_TITLE_WIDTH))
     .into()
@@ -4430,7 +4517,7 @@ fn dropdown(menu: Menu, toggles: Toggles, selected: usize, windows: &[String], a
 fn toolchain_dialog(dialog: &ToolchainDialog) -> Element<'static, Message> {
     let row_button = |index: usize, name: String, note: String, mark: &'static str, usable: bool| {
         let chosen = index == dialog.selected;
-        let note_color = if usable { TURBO_DARK_GRAY } else { TURBO_RED };
+        let note_color = if usable { turbo_dark_gray() } else { turbo_red() };
         button(column![
             row![text(name).color(Color::BLACK), Space::new().width(Length::Fill), text(mark).color(Color::BLACK)],
             text(note).color(note_color).size(13),
@@ -4440,7 +4527,7 @@ fn toolchain_dialog(dialog: &ToolchainDialog) -> Element<'static, Message> {
         .on_press(Message::ToolchainPick(index))
         .style(move |_, status| button::Style {
             background: Some(Background::Color(
-                if chosen || matches!(status, button::Status::Hovered) { TURBO_GREEN } else { TURBO_GRAY },
+                if chosen || matches!(status, button::Status::Hovered) { turbo_green() } else { turbo_gray() },
             )),
             ..button::Style::default()
         })
@@ -4459,7 +4546,7 @@ fn toolchain_dialog(dialog: &ToolchainDialog) -> Element<'static, Message> {
         container(text(" Rust toolchain of this project ").color(Color::WHITE))
             .width(Length::Fill)
             .padding(2)
-            .style(|_| container::Style::default().background(TURBO_BLUE)),
+            .style(|_| container::Style::default().background(turbo_blue())),
         scrollable(column(rows).padding(8)).height(Length::Shrink),
         container(
             text(" Up/Down  Enter picks  O other name  Esc closes. Install more with: rustup toolchain install <name>")
@@ -4471,7 +4558,7 @@ fn toolchain_dialog(dialog: &ToolchainDialog) -> Element<'static, Message> {
     opaque(
         container(container(body).width(640).style(|_| container::Style {
             border: iced::Border::default().color(Color::BLACK).width(1),
-            ..container::Style::default().background(TURBO_GRAY)
+            ..container::Style::default().background(turbo_gray())
         }))
         .center(Length::Fill),
     )
@@ -4484,7 +4571,7 @@ fn hotkey_label(label: &str, hotkey: char) -> Element<'static, Message> {
             let end = i + label[i..].chars().next().map_or(0, char::len_utf8);
             row![
                 text(label[..i].to_string()).color(Color::BLACK),
-                text(label[i..end].to_string()).color(TURBO_RED),
+                text(label[i..end].to_string()).color(turbo_red()),
                 text(label[end..].to_string()).color(Color::BLACK),
             ]
             .into()
@@ -4500,7 +4587,7 @@ fn help_screen() -> Element<'static, Message> {
     for &(g, keys, action) in SHORTCUTS {
         if g != group {
             group = g;
-            lines.push(text(format!(" {g}")).color(TURBO_YELLOW).into());
+            lines.push(text(format!(" {g}")).color(turbo_yellow()).into());
         }
         lines.push(
             row![text(format!("   {keys}")).color(Color::WHITE).width(330), text(action).color(SCREEN_TEXT)].into(),
@@ -4510,15 +4597,15 @@ fn help_screen() -> Element<'static, Message> {
         text(" Keyboard shortcuts    Up/Down/PgUp/PgDn scroll    Esc or F1 closes ").color(Color::BLACK),
     )
     .width(Length::Fill)
-    .style(|_| container::Style::default().background(TURBO_GRAY));
+    .style(|_| container::Style::default().background(turbo_gray()));
     let list = scrollable(column(lines).spacing(2).padding([6, 8])).id(HELP_SCROLL).height(Length::Fill);
     let window = container(column![title, list]).style(|_| container::Style {
-        border: iced::Border::default().color(TURBO_GRAY).width(2),
-        ..container::Style::default().background(TURBO_CYAN)
+        border: iced::Border::default().color(turbo_gray()).width(2),
+        ..container::Style::default().background(turbo_cyan())
     });
     opaque(
         container(window)
-            .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(STATUS_BAR_HEIGHT + 8.0).left(60.0).right(60.0))
+            .padding(Padding::default().top(MENU_BAR_HEIGHT + 8.0).bottom(status_bar_height() + 8.0).left(60.0).right(60.0))
             .width(Length::Fill)
             .height(Length::Fill),
     )
@@ -4532,12 +4619,12 @@ fn small_button(label: &str, message: Option<Message>) -> Element<'_, Message> {
 /// A small button; `focused` marks the one Tab has reached (cyan with a black frame).
 fn small_button_focus(label: &str, message: Option<Message>, focused: bool) -> Element<'_, Message> {
     let enabled = message.is_some();
-    button(text(format!(" {label} ")).color(if enabled { Color::BLACK } else { TURBO_DARK_GRAY }))
+    button(text(format!(" {label} ")).color(if enabled { Color::BLACK } else { turbo_dark_gray() }))
         .padding([1, 6])
         .on_press_maybe(message)
         .style(move |_, status| button::Style {
             background: Some(Background::Color(
-                if focused || (enabled && matches!(status, button::Status::Hovered)) { TURBO_CYAN } else { TURBO_GREEN },
+                if focused || (enabled && matches!(status, button::Status::Hovered)) { turbo_cyan() } else { turbo_green() },
             )),
             text_color: Color::BLACK,
             border: if focused { iced::Border::default().color(Color::BLACK).width(2) } else { iced::Border::default() },
@@ -4549,7 +4636,7 @@ fn small_button_focus(label: &str, message: Option<Message>, focused: bool) -> E
 fn menu_title_style(open: bool, status: button::Status) -> button::Style {
     let highlighted = open || matches!(status, button::Status::Hovered);
     button::Style {
-        background: highlighted.then(|| Background::Color(TURBO_GREEN)),
+        background: highlighted.then(|| Background::Color(turbo_green())),
         text_color: Color::BLACK,
         ..button::Style::default()
     }
@@ -6002,7 +6089,17 @@ mod settings_dialog_tests {
         assert_eq!(platform::read_setting("preview_mode").as_deref(), Some("window"));
         assert_eq!(platform::read_setting("vim").as_deref(), Some("true"));
 
-        // Row 6 opens the dependencies check and leaves the dialog; the last row closes it.
+        // Rows 6 and 7: the mono theme and the two-line status bar (both put back at once).
+        keys(&mut ide, [NavKey::Down, NavKey::Enter]);
+        assert!(platform::mono());
+        keys(&mut ide, [NavKey::Enter]);
+        assert!(!platform::mono());
+        keys(&mut ide, [NavKey::Down, NavKey::Enter]);
+        assert!(ide.two_line_status);
+        keys(&mut ide, [NavKey::Enter]);
+        assert!(!ide.two_line_status);
+
+        // Row 8 opens the dependencies check and leaves the dialog; the last row closes it.
         keys(&mut ide, [NavKey::Down, NavKey::Enter]);
         assert!(ide.settings.is_none());
         send(&mut ide, [Message::OpenSettings]);
@@ -6214,5 +6311,36 @@ mod menu_layout_tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), firsts.len(), "Alt+letter must open one menu: {firsts:?}");
+    }
+}
+#[cfg(test)]
+mod theme_tests {
+    use super::test_support::isolate_settings;
+    use super::*;
+
+    #[test]
+    fn mono_theme_and_two_line_status_are_options_with_settings() {
+        let _settings = isolate_settings();
+        let mut ide = Ide::default();
+        ide.persist_settings = true;
+        let items = menu_items(Menu::Options, ide.toggles(), &[], 0);
+        assert!(items.iter().any(|i| i.label.starts_with("Mono theme") && i.label.ends_with("[ ]")));
+        assert!(items.iter().any(|i| i.label.starts_with("Two-line status")));
+        let turbo = turbo_blue();
+        let _ = ide.update(Message::ToggleMono);
+        assert!(platform::mono());
+        assert_ne!(turbo_blue(), turbo, "the palette changes");
+        assert_eq!(platform::read_setting("theme").as_deref(), Some("mono"));
+        let _ = ide.view(window::Id::unique());
+        let _ = ide.update(Message::ToggleStatusLines);
+        assert!(ide.two_line_status);
+        assert!(status_bar_height() > 30.0);
+        assert_eq!(platform::read_setting("status_lines").as_deref(), Some("2"));
+        let _ = ide.view(window::Id::unique());
+        let _ = ide.update(Message::ToggleMono);
+        let _ = ide.update(Message::ToggleStatusLines);
+        assert!(!platform::mono() && !ide.two_line_status);
+        assert_eq!(platform::read_setting("theme").as_deref(), Some("turbo"));
+        assert!(status_bar_height() < 30.0);
     }
 }

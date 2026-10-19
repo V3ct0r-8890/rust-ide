@@ -58,6 +58,8 @@ Everything works from the keyboard. **F1 lists every shortcut.**
 | Ctrl+= / Ctrl+- / Ctrl+0 | Font larger / smaller / default (window version; remembered) |
 | Alt+X | Exit (press twice to discard unsaved changes) |
 
+**Mono theme and two-line status bar** (window version, 0.2.33): **Options > Mono theme** (Alt+O T, also a Settings row) swaps the Turbo Pascal colors for black, white and grays, including the syntax colors; **Options > Two-line status** (Alt+O W) makes the status bar two lines of smaller text: message, tool and position on the first, the function keys on the second. Both are remembered (`theme`, `status_lines` in the settings file).
+
 **Menus** (window version, 0.2.32): File, Edit, Search, Run, Compile, Debug, **Tools** (Dependencies, environment, Python .venv, Rust toolchain), **Options** (Settings, Vim, check before run, line numbers, font size), **Window** (next / previous / close, Markdown preview, window style, the open files) and Help.
 
 **Window style** (window version): **Window > Legacy / Horizontal / Vertical** (Alt+W, then L / H / T) chooses how open files are

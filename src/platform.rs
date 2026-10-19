@@ -243,6 +243,17 @@ fn expand_env(value: &str) -> String {
     out
 }
 
+/// The monochrome theme (grays on black) instead of the Turbo Pascal colors.
+static MONO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn mono() -> bool {
+    MONO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_mono(on: bool) {
+    MONO.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
 }

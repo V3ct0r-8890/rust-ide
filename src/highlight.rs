@@ -77,7 +77,24 @@ pub enum Highlight {
 }
 
 pub fn to_format(highlight: &Highlight, _theme: &Theme) -> Format<Font> {
-    let color = match highlight {
+    let gray = |v: f32| Color::from_rgb(v, v, v);
+    let color = if crate::platform::mono() {
+        match highlight {
+            Highlight::Keyword => Color::WHITE,
+            Highlight::Type => gray(0.88),
+            Highlight::Str => gray(0.72),
+            Highlight::Number => gray(0.80),
+            Highlight::Comment => gray(0.50),
+            Highlight::Attribute => gray(0.65),
+            Highlight::Error => Color::WHITE,
+            Highlight::Warning => gray(0.85),
+            Highlight::Match => gray(0.60),
+            Highlight::Current => Color::WHITE,
+            Highlight::Breakpoint => gray(0.60),
+            Highlight::ExecLine => gray(0.95),
+        }
+    } else {
+    match highlight {
         Highlight::Keyword => Color::WHITE,
         Highlight::Type => Color::from_rgb(0.33, 1.0, 0.33),
         Highlight::Str => Color::from_rgb(0.33, 1.0, 1.0),
@@ -90,6 +107,7 @@ pub fn to_format(highlight: &Highlight, _theme: &Theme) -> Format<Font> {
         Highlight::Current => Color::WHITE,
         Highlight::Breakpoint => Color::from_rgb(1.0, 0.55, 0.55),
         Highlight::ExecLine => Color::from_rgb(0.35, 1.0, 0.35),
+    }
     };
     // Color only: a bold face can have a different width and would break
     // the column alignment of the code.
