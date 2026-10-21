@@ -145,6 +145,8 @@ Things that differ on macOS:
 - Debugging Rust needs gdb, which needs code signing on macOS, so it is not offered yet.
   Python (debugpy) and C# (netcoredbg) debugging should work.
 - *Run in external terminal* opens Terminal.app.
+- Save, Open, Undo, Redo and the font keys use **Cmd** where the other systems use Ctrl
+  (Cmd+S, Cmd+Z, Cmd+=). The menus still show the Ctrl names.
 - The F-keys are media keys on a Mac keyboard: hold **fn** or turn on "Use F1, F2, etc. keys as
   standard function keys" in System Settings > Keyboard. Ctrl+F3 (close window) is Mission Control's
   default shortcut; turn that off there or use the Window menu.

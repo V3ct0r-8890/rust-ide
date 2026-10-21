@@ -481,7 +481,7 @@ fn draw_language(frame: &mut Frame, selected: usize, startup: bool) {
 }
 
 fn draw_toolchains(frame: &mut Frame, choices: &[rust_ide::env::ToolchainChoice], selected: usize) {
-    let height = (choices.len() as u16 + 1) * 2 + 4;
+    let height = (choices.len() as u16 + 1) * 2 + 5;
     let area = centered(frame.area(), 78, height);
     frame.render_widget(Clear, area);
     let block = dialog("Rust toolchain of this project");
@@ -502,7 +502,8 @@ fn draw_toolchains(frame: &mut Frame, choices: &[rust_ide::env::ToolchainChoice]
         lines.push(Line::from(Span::styled(format!("   {note}"), note_style)));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(" Up/Down  Enter picks  O other name  Esc cancels  (install: rustup toolchain install <name>)"));
+    lines.push(Line::from(" Up/Down  Enter picks  O other name  Esc cancels"));
+    lines.push(Line::from(" Install more with: rustup toolchain install <name>"));
     frame.render_widget(Paragraph::new(lines).style(BAR), inner);
 }
 

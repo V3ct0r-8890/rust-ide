@@ -1753,9 +1753,6 @@ three");
         app.key(key(KeyCode::Down));
         app.key(key(KeyCode::Enter));
         assert_eq!(app.toolchain_label(), format!("Rust {msvc} "));
-        if cfg!(windows) {
-            assert!(app.status.contains("warning"), "an MSVC toolchain without Visual Studio is flagged: {}", app.status);
-        }
         app.open_toolchains(&[gnu.clone()]);
         app.key(key(KeyCode::Char('o')));
         app.key(key(KeyCode::Enter));

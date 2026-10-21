@@ -5971,8 +5971,9 @@ mod font_tests {
     #[test]
     fn ctrl_equals_minus_and_zero_are_the_shortcuts() {
         let physical = key::Physical::Unidentified(key::NativeCode::Unidentified);
-        let ctrl = Modifiers::CTRL;
-        let key = |c: &str| shortcut(&Key::Character(c.into()), physical, ctrl);
+        // Ctrl on Windows and Linux, Cmd on macOS.
+        let command = Modifiers::COMMAND;
+        let key = |c: &str| shortcut(&Key::Character(c.into()), physical, command);
         assert!(matches!(key("="), Some(Message::FontLarger)));
         assert!(matches!(key("+"), Some(Message::FontLarger)));
         assert!(matches!(key("-"), Some(Message::FontSmaller)));
