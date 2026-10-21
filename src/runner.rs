@@ -475,7 +475,8 @@ mod tests {
         let d = parse_msbuild_line(line, base).unwrap();
         assert_eq!((d.line, d.column, d.level.as_str()), (3, 9, "error"));
         assert_eq!(d.message, "CS0029: Cannot convert type 'string' to 'int'");
-        assert!(d.file.unwrap().ends_with("Program.cs"));
+        // A Windows path is one component on Linux and macOS, so compare the text.
+        assert!(d.file.unwrap().to_string_lossy().ends_with("Program.cs"));
         let w = parse_msbuild_line("a.cs(1,2,1,5): warning CS0168: The variable 'x' is declared but never used", base).unwrap();
         assert_eq!((w.line, w.column, w.level.as_str()), (1, 2, "warning"));
         assert!(parse_msbuild_line("Build FAILED.", base).is_none());
