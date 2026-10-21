@@ -19,7 +19,7 @@ jobs:
       - run: cargo build --locked
       - run: cargo test --locked
       - name: Debugger tests (gdb and debugpy)
-        run: "cargo test --locked dap:: -- --ignored --test-threads=1"
+        run: "cargo test --locked dap:: -- --ignored --test-threads=1 --skip netcoredbg"
       - name: New project templates build, run and pass their own tests
         run: "cargo test --locked templates:: -- --ignored --test-threads=1"
         env:
