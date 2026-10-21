@@ -90,6 +90,7 @@ pub fn check(os: Os) -> Vec<Dep> {
             install: match os {
                 Os::Debian => "sudo apt install build-essential".into(),
                 Os::RedHat => "sudo dnf install gcc".into(),
+                Os::MacOs => "xcode-select --install   (Apple's command line tools)".into(),
                 _ => "install gcc with your package manager".into(),
             },
             auto: None,
@@ -105,6 +106,7 @@ pub fn check(os: Os) -> Vec<Dep> {
             Os::Windows => "winget install Python.Python.3.13".into(),
             Os::Debian => "sudo apt install python3".into(),
             Os::RedHat => "sudo dnf install python3".into(),
+            Os::MacOs => "brew install python   (or use Managed Python below)".into(),
             _ => "install python3 with your package manager".into(),
         },
         auto: (os == Os::Windows).then(|| {
@@ -121,6 +123,7 @@ pub fn check(os: Os) -> Vec<Dep> {
             Os::Windows => "winget install Microsoft.DotNet.SDK.10".into(),
             Os::Debian => "sudo apt install dotnet-sdk-10.0   (or add Microsoft's package feed first)".into(),
             Os::RedHat => "sudo dnf install dotnet-sdk-10.0".into(),
+            Os::MacOs => "brew install --cask dotnet-sdk".into(),
             _ => "install the .NET SDK with your package manager".into(),
         },
         auto: (os == Os::Windows)
@@ -174,6 +177,10 @@ pub fn check(os: Os) -> Vec<Dep> {
             "sudo apt install pipx   then   pipx install basedpyright".to_string(),
             has_pipx.then(|| words("pipx install basedpyright")),
         ),
+        Os::MacOs => (
+            "brew install basedpyright".to_string(),
+            platform::find_program("brew").map(|_| words("brew install basedpyright")),
+        ),
         _ => {
             let command = format!("{python} -m pip install --user basedpyright");
             (command.clone(), Some(words(&command)))
@@ -188,7 +195,9 @@ pub fn check(os: Os) -> Vec<Dep> {
         auto,
     });
 
-    deps.push(Dep {
+    // gdb needs code signing on macOS, so Rust debugging is not offered there yet.
+    if os != Os::MacOs {
+        deps.push(Dep {
         name: "gdb 14+",
         purpose: "debugging Rust (F7/F8, breakpoints)",
         need: Need::Recommended,
@@ -203,7 +212,8 @@ pub fn check(os: Os) -> Vec<Dep> {
         auto: (os == Os::Windows).then(|| {
             words("winget install --id BrechtSanders.WinLibs.POSIX.MSVCRT -e --accept-source-agreements --accept-package-agreements")
         }),
-    });
+        });
+    }
 
     deps.push(Dep {
         name: "netcoredbg",
@@ -231,7 +241,7 @@ pub fn check(os: Os) -> Vec<Dep> {
         auto,
     });
 
-    if os != Os::Windows {
+    if matches!(os, Os::Debian | Os::RedHat | Os::OtherLinux) {
         let portal = ["/usr/libexec/xdg-desktop-portal", "/usr/lib/xdg-desktop-portal"]
             .iter()
             .find(|p| Path::new(p).is_file());

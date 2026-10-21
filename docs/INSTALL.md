@@ -23,12 +23,13 @@ Alt+F5 to show or hide it), so a terminal emulator is not needed.
 
 **Quickest way:** download the package for your system from the
 [Releases page](https://github.com/V3ct0r-8890/rust-ide/releases) and run the script inside it:
-`install-deps.ps1` on Windows, `./install-deps.sh` on Linux. The sections below
+`install-deps.ps1` on Windows, `./install-deps.sh` on Linux and macOS. The sections below
 list what those scripts do, step by step.
 
 - [Windows 10/11](#windows-1011)
 - [Ubuntu 24.04 LTS and newer](#ubuntu-2404-lts-and-newer)
 - [Fedora, RHEL 9/10, Rocky Linux, AlmaLinux](#fedora-rhel-910-rocky-linux-almalinux)
+- [macOS 11 and newer](#macos-11-and-newer)
 - [Building rust-ide from source](#building-rust-ide-from-source)
 
 ---
@@ -117,6 +118,37 @@ sudo apt install libxkbcommon0 libwayland-client0 libx11-6 libxcursor1 libxi6 li
 # Fedora / RHEL
 sudo dnf install libxkbcommon wayland libX11 libXcursor libXi libXrandr mesa-vulkan-drivers
 ```
+
+---
+
+## macOS 11 and newer
+
+Download `rust-ide-<version>-macos-arm64.tar.gz` (Apple Silicon) or `-macos-x86_64.tar.gz`
+(Intel), unpack it and run `./install-deps.sh`. It installs, without sudo:
+
+```bash
+xcode-select --install                 # C linker (Apple's command line tools)
+brew install python basedpyright       # Python and live Python errors
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+rustup component add rust-analyzer
+brew install --cask dotnet-sdk         # only for C#
+```
+
+Then open **Rust IDE.app**. It is not notarized by Apple, so the first time macOS refuses it:
+right-click the app, choose **Open**, then **Open** again (or run
+`xattr -dr com.apple.quarantine "Rust IDE.app"`). The terminal version is `./rust-ide-tui`.
+
+Things that differ on macOS:
+
+- Homebrew's Python blocks `pip install --user` (PEP 668). Use **Tools > Dependencies >
+  Managed Python** (the IDE's own Python), then install debugpy with the Install button.
+- Debugging Rust needs gdb, which needs code signing on macOS, so it is not offered yet.
+  Python (debugpy) and C# (netcoredbg) debugging should work.
+- *Run in external terminal* opens Terminal.app.
+- The F-keys are media keys on a Mac keyboard: hold **fn** or turn on "Use F1, F2, etc. keys as
+  standard function keys" in System Settings > Keyboard. Ctrl+F3 (close window) is Mission Control's
+  default shortcut; turn that off there or use the Window menu.
+- Settings are in `~/Library/Application Support/rust-ide/settings.txt`.
 
 ---
 

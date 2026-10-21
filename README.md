@@ -215,15 +215,19 @@ Prebuilt packages are on the [Releases page](https://github.com/V3ct0r-8890/rust
 - **Linux x86_64** (Ubuntu 24.04+, Fedora, RHEL/Rocky/AlmaLinux 9 and 10):
   `rust-ide-<version>-linux-x86_64.tar.gz`. Unpack, run `./install-deps.sh` for the tools
   and `./install.sh` to add `rust-ide` to `~/.local/bin` and your application menu.
+- **macOS 11+** (Apple Silicon and Intel): `rust-ide-<version>-macos-arm64.tar.gz` or
+  `-macos-x86_64.tar.gz`. Unpack, run `./install-deps.sh` (Homebrew and rustup), and open
+  `Rust IDE.app`. The app is not notarized: the first time, right-click it and choose Open.
+  `rust-ide-tui` is in the same folder. Rust debugging (gdb) is not available on macOS yet.
 
-To build the packages yourself: `packaging/package-windows.ps1` or `sh packaging/package-linux.sh`
+To build the packages yourself: `packaging/package-windows.ps1`, `sh packaging/package-linux.sh` or `sh packaging/package-macos.sh`
 (output in `dist/`).
 
 ## Status
 
 Done: more Vim commands, font size, Markdown preview, window style (legacy / horizontal / vertical tabs), syntax check (Alt+F9), terminal version `rust-ide-tui`, several open files (tabs, F6, Window menu), debugger (breakpoints, F7/F8 stepping, watches, locals, call stack), editor with a Turbo-style block cursor and full keyboard control (F1 help, F10 menus), build and run (F9/F5) with the in-IDE Output window, highlighting, live errors
 and completion, undo, basic Vim mode, Search menu (find, replace, go to line),
-Windows and Linux packages.
+Windows, Linux and macOS packages.
 
 Next, easiest first:
 the rest of the terminal version (including a Settings dialog), C# support.
@@ -235,6 +239,7 @@ See **[docs/ROADMAP.md](docs/ROADMAP.md)** for the full backlog and known limita
 - Windows 10/11 (GNU toolchain, no Visual Studio needed)
 - Ubuntu 24.04 LTS and newer
 - Fedora, RHEL 9/10, Rocky Linux, AlmaLinux
+- macOS 11 and newer (new in 0.2.37, built by CI and not yet tested by hand)
 
 At startup rust-ide checks for the tools it needs (Rust, a C linker, Python, rust-analyzer,
 basedpyright, ...). If something is missing it opens **Tools > Dependencies**, which shows
@@ -252,7 +257,7 @@ See **[docs/INSTALL.md](docs/INSTALL.md)** for the toolchain and language server
 
 Options: `rust-ide --software` (or `renderer=software` in the settings file) uses software
 rendering on machines with broken GPU drivers. Settings live in `%APPDATA%\rust-ide\settings.txt`
-or `~/.config/rust-ide/settings.txt`.
+`~/.config/rust-ide/settings.txt` (Linux) or `~/Library/Application Support/rust-ide/settings.txt` (macOS).
 
 Tests: `cargo test`; live language-server tests: `cargo test -- --ignored`.
-CI builds and tests on Ubuntu 24.04, Fedora, AlmaLinux 9/10 and Windows.
+CI builds and tests on Ubuntu 24.04, Fedora, AlmaLinux 9/10, macOS and Windows.

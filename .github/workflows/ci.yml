@@ -51,3 +51,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --locked
       - run: cargo test --locked
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked
+      - run: cargo test --locked

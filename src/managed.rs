@@ -19,13 +19,7 @@ pub fn root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("RUST_IDE_TOOLS") {
         return Some(PathBuf::from(dir));
     }
-    let base = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?
-    } else {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| platform::home_dir().map(|h| h.join(".local").join("share")))?
-    };
+    let base = platform::data_base("LOCALAPPDATA", "XDG_DATA_HOME", &[".local", "share"])?;
     Some(base.join("rust-ide").join("tools"))
 }
 
@@ -100,11 +94,14 @@ pub fn run(command: &[String]) -> Result<String, String> {
 // ----- Python -----
 
 fn python_triple() -> &'static str {
-    match (cfg!(windows), cfg!(target_arch = "aarch64")) {
-        (true, false) => "x86_64-pc-windows-msvc",
-        (true, true) => "aarch64-pc-windows-msvc",
-        (false, false) => "x86_64-unknown-linux-gnu",
-        (false, true) => "aarch64-unknown-linux-gnu",
+    let arm = cfg!(target_arch = "aarch64");
+    match (cfg!(windows), cfg!(target_os = "macos"), arm) {
+        (true, _, false) => "x86_64-pc-windows-msvc",
+        (true, _, true) => "aarch64-pc-windows-msvc",
+        (_, true, false) => "x86_64-apple-darwin",
+        (_, true, true) => "aarch64-apple-darwin",
+        (_, _, false) => "x86_64-unknown-linux-gnu",
+        (_, _, true) => "aarch64-unknown-linux-gnu",
     }
 }
 
@@ -149,11 +146,14 @@ fn install_python() -> Result<String, String> {
 // ----- Rust -----
 
 fn rustup_target() -> &'static str {
-    match (cfg!(windows), cfg!(target_arch = "aarch64")) {
-        (true, false) => "x86_64-pc-windows-gnu",
-        (true, true) => "aarch64-pc-windows-msvc",
-        (false, false) => "x86_64-unknown-linux-gnu",
-        (false, true) => "aarch64-unknown-linux-gnu",
+    let arm = cfg!(target_arch = "aarch64");
+    match (cfg!(windows), cfg!(target_os = "macos"), arm) {
+        (true, _, false) => "x86_64-pc-windows-gnu",
+        (true, _, true) => "aarch64-pc-windows-msvc",
+        (_, true, false) => "x86_64-apple-darwin",
+        (_, true, true) => "aarch64-apple-darwin",
+        (_, _, false) => "x86_64-unknown-linux-gnu",
+        (_, _, true) => "aarch64-unknown-linux-gnu",
     }
 }
 

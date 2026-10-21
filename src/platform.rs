@@ -166,6 +166,12 @@ pub fn search_dirs() -> Vec<PathBuf> {
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
+    if cfg!(target_os = "macos") {
+        // A GUI app started from Finder gets a bare PATH without Homebrew.
+        for dir in ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/share/dotnet"] {
+            dirs.push(PathBuf::from(dir));
+        }
+    }
     if let Some(home) = home_dir() {
         dirs.push(home.join(".cargo").join("bin"));
         dirs.push(home.join(".local").join("bin")); // pip --user, pipx
@@ -314,6 +320,22 @@ pub fn linux_terminal() -> Option<(PathBuf, &'static [&'static str])> {
         .find_map(|(name, flags)| find_in(&dirs, name).map(|path| (path, *flags)))
 }
 
+/// The per-user base folder for settings and data: `windows_var` on Windows,
+/// `~/Library/Application Support` on macOS, else `xdg_var` or `~/<xdg_default>`.
+pub fn data_base(windows_var: &str, xdg_var: &str, xdg_default: &[&str]) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return std::env::var_os(windows_var).map(PathBuf::from);
+    }
+    if cfg!(target_os = "macos") {
+        return home_dir().map(|h| h.join("Library").join("Application Support"));
+    }
+    std::env::var_os(xdg_var).map(PathBuf::from).or_else(|| {
+        let mut path = home_dir()?;
+        path.extend(xdg_default);
+        Some(path)
+    })
+}
+
 /// A command that runs `program args` in a new terminal window that stays
 /// open until a key is pressed.
 pub fn external_terminal(program: &Path, args: &[String]) -> Result<Command, String> {
@@ -335,7 +357,25 @@ pub fn external_terminal(program: &Path, args: &[String]) -> Result<Command, Str
             .creation_flags(CREATE_NEW_CONSOLE);
         Ok(command)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // Terminal.app runs a .command file in a new window.
+        use std::os::unix::fs::PermissionsExt;
+        let mut script = String::from("#!/bin/sh\n");
+        script.push_str(&shell_quote(&program.to_string_lossy()));
+        for arg in args {
+            script.push(' ');
+            script.push_str(&shell_quote(arg));
+        }
+        script.push_str("\nstatus=$?\necho\necho \"[Process exited with code $status]\"\nprintf 'Press Enter to close...'\nread _\nrm -f \"$0\"\n");
+        let file = std::env::temp_dir().join(format!("rust-ide-run-{}.command", std::process::id()));
+        std::fs::write(&file, script).map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        let mut command = Command::new("open");
+        command.args(["-a", "Terminal"]).arg(file);
+        Ok(command)
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         let (terminal, flags) = linux_terminal()
             .ok_or("No terminal emulator found (install gnome-terminal, konsole or xterm)")?;
@@ -364,13 +404,7 @@ pub fn config_path() -> Option<PathBuf> {
     if let Some(file) = std::env::var_os("RUST_IDE_CONFIG_FILE") {
         return Some(PathBuf::from(file));
     }
-    let base = if cfg!(windows) {
-        std::env::var_os("APPDATA").map(PathBuf::from)
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| home_dir().map(|h| h.join(".config")))
-    }?;
+    let base = data_base("APPDATA", "XDG_CONFIG_HOME", &[".config"])?;
     Some(base.join("rust-ide").join("settings.txt"))
 }
 

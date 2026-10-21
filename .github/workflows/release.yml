@@ -77,10 +77,34 @@ jobs:
           name: windows-package
           path: dist/*.zip
 
+  macos:
+    name: macOS package (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: sh packaging/package-macos.sh ${{ matrix.target }}
+      - name: Check the Apple Silicon build runs
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          tar -xzf dist/rust-ide-*-macos-arm64.tar.gz -C dist
+          dist/rust-ide-*/rust-ide-tui --version
+          "dist/$(ls dist | grep -v tar.gz | head -1)/Rust IDE.app/Contents/MacOS/rust-ide" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-package-${{ matrix.target }}
+          path: dist/*.tar.gz
+
   publish:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, linux-check, windows]
+    needs: [linux, linux-check, windows, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -93,4 +117,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" rust-ide-*.zip rust-ide-*.tar.gz \
             --repo "$GITHUB_REPOSITORY" --title "rust-ide $GITHUB_REF_NAME" \
-            --notes "Downloads: Windows 10/11 (.zip) and Linux x86_64 for Ubuntu 24.04+, Fedora, RHEL 9/10 (.tar.gz). Run install-deps first if tools are missing; see docs/INSTALL.md."
+            --notes "Downloads: Windows 10/11 (.zip) Linux x86_64 for Ubuntu 24.04+, Fedora, RHEL 9/10 (.tar.gz), and macOS 11+ for Apple Silicon (arm64) and Intel (x86_64) (.tar.gz, not notarized: right-click > Open the first time). Run install-deps first if tools are missing; see docs/INSTALL.md."
