@@ -6333,11 +6333,11 @@ mod project_dialog_tests {
             [
                 Message::ProjectFolder(parent.to_string_lossy().into_owned()),
                 Message::ProjectName("cs-tool".into()),
-                Message::ProjectAct(PROJECT_SIZE, 1),
-                Message::ProjectAct(PROJECT_SIZE, 1),
-                Message::ProjectCreate,
             ],
         );
+        // The starting size is the one remembered by whichever test ran before.
+        ide.project.as_mut().unwrap().size = templates::Size::Medium;
+        send(&mut ide, [Message::ProjectCreate]);
         let main = parent.join("cs-tool").join("src").join("cs-tool").join("Program.cs");
         assert!(main.is_file(), "the Medium layout");
         assert_eq!(ide.path.as_deref(), Some(main.as_path()));
