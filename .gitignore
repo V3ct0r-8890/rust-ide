@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+*.pdb
+.vscode/
+.idea/
+/.venv
+/dist
+.rust-ide/
+/.dotnet-tools
+/.cargo-home

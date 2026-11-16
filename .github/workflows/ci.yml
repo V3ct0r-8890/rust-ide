@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ubuntu:
+    name: Ubuntu 24.04
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y build-essential python3 gdb python3-debugpy python3-pytest
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked
+      - run: cargo test --locked
+      - name: Debugger tests (gdb and debugpy)
+        run: "cargo test --locked dap:: -- --ignored --test-threads=1 --skip netcoredbg"
+      - name: New project templates build, run and pass their own tests
+        run: "cargo test --locked templates:: -- --ignored --test-threads=1"
+        env:
+          PYTHON: python3
+
+  redhat:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["fedora:latest", "almalinux:9", "almalinux:10"]
+    steps:
+      - uses: actions/checkout@v4
+      - run: dnf install -y gcc python3 git
+      - name: Install Rust with rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: cargo build --locked
+      - run: cargo test --locked
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked
+      - run: cargo test --locked
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked
+      - run: cargo test --locked

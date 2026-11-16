@@ -1,0 +1,22 @@
+[package]
+name = "rust-ide"
+version = "0.2.55"
+edition = "2024"
+description = "Turbo Pascal-style IDE for Rust and Python"
+repository = "https://github.com/V3ct0r-8890/rust-ide"
+
+[dependencies]
+iced = { version = "0.14.0", features = ["advanced", "markdown"] }
+pulldown-cmark = { version = "0.12.2", default-features = false }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+rfd = "0.17.2"
+serde_json = "1.0.154"
+
+[target.'cfg(windows)'.dependencies]
+# The terminal IDE's clipboard (already used by iced).
+clipboard-win = "5.4.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

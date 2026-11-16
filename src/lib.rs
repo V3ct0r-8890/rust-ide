@@ -1,0 +1,21 @@
+//! The engine shared by both front ends: the iced GUI (`rust-ide`) and the
+//! terminal UI (`rust-ide-tui`).
+
+pub mod dap;
+pub mod deps;
+pub mod env;
+pub mod fallback;
+pub mod filetype;
+pub mod highlight;
+pub mod lessons;
+pub mod lsp;
+pub mod managed;
+pub mod output;
+pub mod platform;
+pub mod runner;
+pub mod search;
+pub mod session;
+pub mod templates;
+mod templates_csharp;
+pub mod text;
+pub mod vim;
